@@ -125,3 +125,19 @@ def test_missing_trace_does_not_create_an_experiment():
     telemetry.status = "incomplete"
     assert publisher(record("candidate", "eval-1"))["status"] == "incomplete"
     assert not client.dataset_creations
+
+
+def test_repeated_standalone_evaluations_get_distinct_experiments():
+    publisher, client, _ = setup()
+    first = record("current", "eval-a")
+    first.pop("plan_id")
+    first["run_id"] = "local-a"
+    second = record("current", "eval-b")
+    second.pop("plan_id")
+    second["run_id"] = "local-b"
+    a = publisher(first)
+    b = publisher(second)
+    assert a["status"] == b["status"] == "available"
+    assert a["dataset_id"] == b["dataset_id"]
+    assert a["experiment_id"] != b["experiment_id"]
+    assert len(client.runs) == 2

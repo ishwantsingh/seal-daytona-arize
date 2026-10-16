@@ -66,6 +66,10 @@ class PhoenixEvaluationPublisher:
             self.exports.insert_one(saved)
         version = (record.get("candidate") or {}).get("version", "current")
         experiment_key = "experiment:" + group + ":" + version
+        if not record.get("plan_id"):
+            # Phoenix permits one run per example/repetition in an experiment.
+            # Standalone executions need their own experiment; retries retain it.
+            experiment_key += ":" + record["run_id"]
         experiment = self.exports.find_one({"_id": experiment_key})
         if experiment is None:
             experiment_data = client.experiments.create(
