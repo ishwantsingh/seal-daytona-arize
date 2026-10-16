@@ -123,3 +123,21 @@ def test_evaluator_rejects_a_result_that_exceeds_fixed_resource_limits():
     trial = assess_run(materialized, over_limit, config)
     assert trial.passed is False
     assert trial.violation == "model_call_limit_exceeded"
+
+
+def test_selection_treats_explicit_null_task_fields_as_omitted():
+    from types import SimpleNamespace
+    from self_heal.evaluation import _selection_violation
+
+    config = load_config()
+    case = SimpleNamespace(
+        role="regression",
+        task={"filter_field": "warehouse", "filter_value": "East", "metric": "available"},
+        expected_answer={"value": 18},
+    )
+
+    def result(task):
+        return RunResult("run", {"value": 18}, None, "answered", task, 1, 1, 10, 0.1, 1, 10)
+
+    assert _selection_violation(case, result({**case.task, "group_by": None}), config) is None
+    assert _selection_violation(case, result({**case.task, "group_by": "sku"}), config) == "task_mismatch"
