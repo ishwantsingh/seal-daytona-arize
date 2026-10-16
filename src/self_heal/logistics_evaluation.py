@@ -20,7 +20,7 @@ from self_heal.telemetry import PhoenixTelemetry
 
 
 class _NoModel:
-    model = "reviewed-logistics-parser"
+    model = "structured-logistics-tool-check"
 
     def complete(self, *_args: Any) -> None:
         raise RuntimeError("The reviewed logistics tool must not call a model")
@@ -51,7 +51,7 @@ def run_logistics_checks(
             exposure_role="reviewed_tool_check", created_at=utc_now()))
         execution = RunExecutor(history=history, telemetry=telemetry, config=scoped).run(
             model=_NoModel(), tools=LogisticsTools(store.open_session(dataset.dataset_id), scoped),
-            dataset=dataset, invocation=question, case_id=case_id,
+            dataset=dataset, invocation=task, case_id=case_id,
             case_exposure="reviewed_tool_check", agent_factory=LogisticsAgent)
         result = execution.result
         passed = (result.outcome == "answered" and result.answer == expected

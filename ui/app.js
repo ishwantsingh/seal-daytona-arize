@@ -5,6 +5,7 @@
     suggestions = $("#suggestions"),
     runButton = $("[data-run-button]"),
     chatMessages = $("[data-chat-messages]");
+  const sendButtonContent = runButton.innerHTML;
   try {
     question.value = sessionStorage.getItem("selfHealLastQuestion") || "";
   } catch {}
@@ -43,6 +44,7 @@
   let chatSource = null,
     chatScrollTop = 0,
     chatSaveTimer,
+    chatSequence = 0,
     shownPage = null;
   let evaluationPage = 0,
     versionPage = 0,
@@ -213,7 +215,6 @@
   }
   function updateRunButton() {
     runButton.disabled = submitting || !serviceReady || !selectedSource?.id;
-    $("[data-new-analysis]").disabled = submitting;
     runButton.title = submitting
       ? "Analysis in progress"
       : !serviceReady
@@ -1993,8 +1994,6 @@
       });
     }
     $(".workspace").classList.toggle("chat-page", selected === "ask");
-    $("[data-new-analysis]").hidden =
-      selected === "ask" && !chatMessages.children.length;
     syncContext(selected);
     $("#run-details").hidden = selected !== "run-details" || !selectedRun;
     $("#runs").hidden = selected !== "runs";
@@ -2595,6 +2594,7 @@
     }
     appendChatMessage("user", prompt, source);
     const reply = appendChatMessage("assistant", "Running analysis…", null, { pending: true });
+    const sequence = ++chatSequence;
     question.value = "";
     saveDraft();
     autosize();
@@ -2618,6 +2618,7 @@
           dataset_id: source.id,
         }),
       });
+      if (sequence !== chatSequence) return;
       const followReply = chatNearBottom();
       reply.entry.text = runMessage(run);
       reply.entry.outcome = run.outcome;
@@ -2633,6 +2634,7 @@
       announce("Analyst replied");
       loadHistory();
     } catch (error) {
+      if (sequence !== chatSequence) return;
       const followReply = chatNearBottom();
       reply.entry.error = true;
       reply.entry.pending = false;
@@ -2647,6 +2649,7 @@
       }
       if (followReply) scrollChat();
     } finally {
+      if (sequence !== chatSequence) return;
       saveChat();
       submitting = false;
       updateRunButton();
@@ -2715,17 +2718,25 @@
     loadWorkflowComparison,
   );
   $("[data-new-analysis]").addEventListener("click", () => {
-    if (submitting) return;
+    chatSequence++;
+    clearTimeout(chatSaveTimer);
+    submitting = false;
+    runButton.innerHTML = sendButtonContent;
+    runButton.removeAttribute("aria-busy");
+    runButton.setAttribute("aria-label", "Send question");
+    updateRunButton();
+    closeSuggestions();
     chatMessages.replaceChildren();
     chatEntries.length = 0;
     chatScrollTop = 0;
+    $("[data-chat-scroll]").scrollTop = 0;
     syncChatLayout();
     question.value = "";
     question.setCustomValidity("");
     saveDraft();
     autosize();
     location.hash = "#ask";
-    $("[data-new-analysis]").hidden = true;
+    announce("Chat reset");
     setTimeout(() => question.focus(), 0);
   });
   $("[data-run-search]").addEventListener("input", () => {

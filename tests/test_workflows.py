@@ -166,3 +166,44 @@ def test_background_job_dispatches_a_logistics_incident_to_its_controller():
     current = history.get_evolution_job(job["job_id"])
     assert current and current["status"] == "rejected"
     assert selected == ["logistics-incident"]
+
+
+def test_logistics_workflow_records_model_loop_and_preserves_historical_dispatch(tmp_path):
+    current = extract_workflow(source=ROOT, source_commit="current", config=load_config(),
+                               task_family="logistics-shipment-threshold")
+    assert current.graph["metadata"]["execution_mode"] == "model_tool_loop"
+    assert any(node["id"] == "external:model" for node in current.graph["nodes"])
+    assert any(edge["source"] == "agent:logistics" and edge["target"] == "external:model"
+               for edge in current.graph["edges"])
+
+    source = tmp_path / "historical-dispatch"
+    (source / "harness").mkdir(parents=True)
+    (source / "harness" / "logistics.py").write_text('''
+class LogisticsAgent:
+    def run(self, invocation):
+        return self.tools.execute("count_customers_over_shipment_threshold", invocation)
+''')
+    old = extract_workflow(source=source, source_commit="old", config=load_config(),
+                           task_family="logistics-shipment-threshold")
+    assert old.graph["metadata"]["execution_mode"] == "direct_tool_dispatch"
+    assert all(node["id"] != "external:model" for node in old.graph["nodes"])
+
+
+def test_changed_source_under_same_version_label_creates_a_new_immutable_workflow(tmp_path):
+    import shutil
+
+    source = tmp_path / "source"
+    shutil.copytree(ROOT / "harness", source / "harness")
+    history, config = _history(), load_config()
+    for family, relative in [(config.task_family, "agent.py"),
+                             ("logistics-shipment-threshold", "logistics.py")]:
+        first = extract_workflow(source=source, source_commit="same-version", config=config, task_family=family)
+        history.record_workflow(first.record)
+        path = source / "harness" / relative
+        path.write_text(path.read_text() + "\n# Updated local implementation\n")
+        second = extract_workflow(source=source, source_commit="same-version", config=config, task_family=family)
+        assert second.graph_hash != first.graph_hash
+        assert second.revision_id != first.revision_id
+        history.record_workflow(second.record)
+        assert history.harness_workflows.find_one({"_id": first.revision_id})["graph_hash"] == first.graph_hash
+        assert history.record_workflow(second.record)["workflow_revision_id"] == second.revision_id

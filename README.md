@@ -21,6 +21,14 @@ uv run seal ui
 
 Open http://127.0.0.1:4173. Ask an inventory question or the public logistics question: **How many customers sent more than 15 shipments from warehouse 3 yesterday?** The reviewed logistics tool returns **2**. The fixture uses synthetic reporting dates.
 
+Restart `seal ui` after changing Python backend code; refreshing the browser reloads only the UI assets. Workflow snapshots include the actual source graph in their identity, so local edits create new immutable revisions without colliding with earlier runs. Unexpected API errors include a server reference that identifies the matching traceback in the server terminal or log.
+
+Natural-language questions go directly to the model with the registered tool descriptions and schemas. There are no sentence templates or keyword routes. The model selects tools, supplies arguments, sees results and recoverable tool errors, and answers within shared call, token, and time budgets. Inventory and logistics use the same bounded loop; structured evaluation tasks may bypass language interpretation.
+
+The initial tools support inventory reads/calculation and counting customers above a shipment threshold yesterday. These are tool capabilities, not accepted question types: paraphrases and combinations reach the model, and newly registered tools are available without adding question matchers. Missing operations or data are recorded as explicit capability gaps and the web app automatically queues self-evolution. Clarification requests are recorded separately and do not trigger evolution. Provider/runtime failures remain errors.
+
+Evolution reproduces incidents, proposes harness changes, and evaluates candidates against independent oracles before promotion. Oracle selection and question-to-task verification use separate model judgments rather than matching question text. Operations outside existing oracle coverage enter `needs_contract` with the requested capability preserved; the system cannot yet automatically build and independently verify arbitrary new database operations. `seal eval logistics` checks the tool deterministically with structured tasks; it does not test natural-language understanding.
+
 Phoenix Cloud URLs must include your app handle: `https://app.phoenix.arize.com/s/YOUR_APP_HANDLE`. The root Cloud URL is not a collector or API endpoint. Local Phoenix works at `http://localhost:6006` with no API key.
 
 ## Demonstrate a repair

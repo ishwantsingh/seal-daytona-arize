@@ -194,8 +194,15 @@ def test_local_ui_automatically_selects_an_operator_dataset():
         server.server_close()
 
 
-def test_logistics_ui_loads_public_bundle_and_records_reviewed_tool_call():
-    app = make_application(supported_model)
+@pytest.mark.parametrize("question, threshold, expected", [
+    ("How many customers sent more than 15 shipments from warehouse 3 yesterday?", 15, 2),
+    ("how many customers sent more than 15 shipments from warehouse 3 yesterday", 15, 2),
+    ("how many customers sent more than 2 shipments from warehouse 3 yesterday", 2, 3),
+    ("Count yesterday’s senders with over fifteen shipments from depot three", 15, 2),
+])
+def test_logistics_ui_loads_public_bundle_and_records_reviewed_tool_call(question, threshold, expected):
+    from test_logistics import logistics_model
+    app = make_application(lambda: logistics_model(threshold=threshold, value=expected))
     app.logistics = LogisticsDatasetStore(app.history.runs.database)
     app.logistics.ensure_indexes()
     status, seeded = app.api("POST", "/api/datasets/logistics", {})
@@ -211,12 +218,12 @@ def test_logistics_ui_loads_public_bundle_and_records_reviewed_tool_call():
     assert customers["row_count"] == 8
     assert customers["columns"] == ["customer_id", "segment", "status"]
     _, run = app.api("POST", "/api/runs", {"input_kind": "logistics_bundle", "dataset_id": seeded["id"],
-        "question": "How many customers sent more than 15 shipments from warehouse 3 yesterday?"})
+        "question": question})
     assert run["outcome"] == "answered"
-    assert run["answer"] == {"value": 2}
-    assert run["message"] == "2 customers sent more than 15 shipments from warehouse 3 yesterday."
+    assert run["answer"] == {"value": expected}
+    assert run["message"] == f"{expected} customers sent more than {threshold} shipments from warehouse 3 yesterday."
     assert run["capability_request"]["kind"] == "shipment_customer_threshold"
-    assert run["resources"]["model_calls"] == 0
+    assert run["resources"]["model_calls"] == 2
     assert run["resources"]["tool_calls"] == 1
     assert run["resources"]["table_pages"] > 0
     assert run["dataset"]["relations"]["shipments"] == 74
@@ -224,34 +231,31 @@ def test_logistics_ui_loads_public_bundle_and_records_reviewed_tool_call():
     assert stored["dataset"]["input_kind"] == "logistics_bundle"
     assert stored["dataset"]["relations"]["customers"]["row_count"] == 8
     assert stored["evidence"]["tool_calls"][0]["name"] == "count_customers_over_shipment_threshold"
-    assert stored["evidence"]["tool_calls"][0]["result"]["value"] == 2
+    assert stored["evidence"]["tool_calls"][0]["result"]["value"] == expected
     assert app.history.get_run(run["run_id"])["invocation"]["task_family"] == "logistics-shipment-threshold"
 
 
-def test_logistics_capability_gap_queues_an_evolution_job(monkeypatch):
-    app = make_application(supported_model)
+def test_logistics_capability_gap_queues_an_evolution_job():
+    question = "Which customer segment shipped the most this month?"
+    app = make_application(lambda: ScriptedModel([ModelReply(json.dumps({"unsupported": {
+        "reason": "Monthly shipment aggregation by customer segment is unavailable",
+        "capability_request": {"operation": "monthly_shipments_by_segment"},
+    }}), (), 10)]))
     app.logistics = LogisticsDatasetStore(app.history.runs.database)
     app.logistics.ensure_indexes()
     _, seeded = app.api("POST", "/api/datasets/logistics", {})
-
-    def missing_capability(self, invocation, *, run_id=None):
-        return RunResult(
-            run_id or "gap", None, None, "unsupported", None, 0, 0, 0, 0, 0, 0,
-            limitation_kind="capability_gap", limitation_reason="A shipment threshold tool is required",
-            capability_request={"kind": "shipment_customer_threshold", "domain": "logistics"},
-        )
-
-    monkeypatch.setattr("self_heal.web.LogisticsAgent.run", missing_capability)
     status, run = app.api("POST", "/api/runs", {
-        "input_kind": "logistics_bundle", "dataset_id": seeded["id"],
-        "question": "How many customers sent more than 15 shipments from warehouse 3 yesterday?",
+        "input_kind": "logistics_bundle", "dataset_id": seeded["id"], "question": question,
     })
     assert status == 201
     assert run["outcome"] == "unsupported"
+    assert run["resources"]["model_calls"] == 1
     assert run["evolution_job_id"].startswith("evolution_")
     assert run["evolution_url"] == "#evolve/" + run["evolution_job_id"]
     stored = app.history.get_run(run["run_id"])
-    assert stored and stored["evolution_job_id"] == run["evolution_job_id"]
+    assert stored["evolution_job_id"] == run["evolution_job_id"]
+    assert stored["capability_request"]["operation"] == "monthly_shipments_by_segment"
+    assert stored["capability_request"]["question"] == question
 
 
 def test_logistics_ui_uses_the_active_pinned_candidate(monkeypatch):
@@ -474,3 +478,54 @@ def test_logistics_run_version_retains_the_exact_executed_commit():
     assert _history_summary(record)["version"] == "exact-tested-candidate"
     assert _history_summary(record, detail=True)["version"] == "exact-tested-candidate"
     assert _history_summary({**record, "execution": {}})["version"] == TOOL_VERSION
+
+
+def test_clarification_does_not_queue_evolution_and_is_shown_to_user():
+    app = make_application(lambda: ScriptedModel([
+        ModelReply('{"clarification":"Which warehouse should I use?"}')]))
+    status, run = app.api("POST", "/api/runs", {"dataset_id": "small", "question": "How much is there?"})
+    assert status == 201
+    assert run["limitation_kind"] == "clarification_required"
+    assert run["message"] == "Which warehouse should I use?"
+    assert run.get("evolution_job_id") is None
+    assert app.history.evolution_jobs.count_documents({}) == 0
+
+
+def test_provider_failure_does_not_queue_evolution():
+    class FailedProvider:
+        def complete(self, *_args):
+            raise ConnectionError("Provider unavailable")
+
+    app = make_application(FailedProvider)
+    _, run = app.api("POST", "/api/runs", {"dataset_id": "small", "question": "Count records."})
+    assert run["outcome"] == "error"
+    assert run.get("evolution_job_id") is None
+    assert app.history.evolution_jobs.count_documents({}) == 0
+
+
+def test_unexpected_server_errors_have_a_log_reference_without_leaking_details(caplog):
+    app = make_application(supported_model)
+
+    def failed_api(*_args):
+        raise RuntimeError("Internal failure details")
+
+    app.api = failed_api
+    server = create_server(app, port=0)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address[:2]
+    base_url = f"http://{host}:{port}"
+    try:
+        for method, body in [("POST", {"question": "Count rows"}), ("GET", None)]:
+            with pytest.raises(HTTPError) as caught:
+                request_json(base_url, "/api/runs", method=method, body=body)
+            assert caught.value.code == 500
+            payload = json.loads(caught.value.read())
+            assert payload["error_id"] in payload["error"]
+            assert payload["error_id"] in caplog.text
+            assert "Internal failure details" not in payload["error"]
+            assert any(record.exc_info for record in caplog.records)
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()

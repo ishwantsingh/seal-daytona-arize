@@ -73,14 +73,15 @@ def test_daytona_protocol_bridge_runs_pinned_logistics_agent_through_scoped_bund
     )
     runner.transport_factory = LocalProcessTransport
     table = logistics.open_session(dataset.dataset_id)
-    question = "How many customers sent more than 15 shipments from warehouse 3 yesterday?"
+    from test_logistics import logistics_model
+    question = "Count senders who shipped over fifteen times yesterday from depot three"
     result = runner._execute_sandbox(
-        ROOT / "harness", question, "logistics-run", table, object(), LogisticsTools(table, config),
+        ROOT / "harness", question, "logistics-run", table, logistics_model(), LogisticsTools(table, config),
         input_kind="logistics_bundle",
     )
     assert result.outcome == "answered", result.error
     assert result.answer == {"value": 2}
-    assert result.model_calls == 0 and result.tool_calls == 1
+    assert result.model_calls == 2 and result.tool_calls == 1
     assert result.table_pages > 1
     assert table.completed_shipment_scan(3, "yesterday")
 
@@ -208,3 +209,72 @@ def test_pinned_commit_run_records_supervisor_measured_evidence():
     assert run["execution"]["runtime"]["isolation"] == "daytona"
     assert run["execution"]["runtime"]["image_digest"].startswith("daytona:")
     assert run["resources"]["table_pages"] == 1
+
+
+def test_sandbox_preserves_model_reported_capability_gap():
+    from test_logistics import ScriptedModel as ReplyModel
+
+    config = load_config(ROOT / "config" / "analyst.yaml")
+    database = SQLiteDatabase()
+    logistics = LogisticsDatasetStore(database)
+    dataset = logistics.materialize("logistics-gap", **public_incident_bundle())
+    table = logistics.open_session(dataset.dataset_id)
+    runner = CandidateRunner(
+        store=TableStore(database, config), logistics=logistics, config=config, history=None,
+        telemetry=PhoenixTelemetry(PhoenixConfig(enabled=False, project="test")),
+    )
+    runner.transport_factory = LocalProcessTransport
+    question = "Break down monthly shipping activity by segment."
+    model = ReplyModel([ModelReply(json.dumps({"unsupported": {
+        "reason": "Monthly aggregation is unavailable",
+        "capability_request": {"operation": "monthly_shipments_by_segment"},
+    }}), (), 10)])
+    result = runner._execute_sandbox(ROOT / "harness", question, "gap-run", table, model,
+                                     LogisticsTools(table, config), input_kind="logistics_bundle")
+    assert result.outcome == "unsupported", result.error
+    assert result.limitation_kind == "capability_gap"
+    assert result.capability_request == {"operation": "monthly_shipments_by_segment", "question": question}
+    assert result.model_calls == 1 and result.tool_calls == 0
+
+
+def test_sandbox_can_use_a_new_tool_without_a_question_matcher(tmp_path):
+    from test_logistics import ScriptedModel as ReplyModel
+
+    source = tmp_path / "harness"
+    shutil.copytree(ROOT / "harness", source)
+    with (source / "logistics.py").open("a") as file:
+        file.write('''
+
+_BaseTools = LogisticsTools
+
+class LogisticsTools(_BaseTools):
+    def definitions(self):
+        return super().definitions() + [{"type": "function", "function": {
+            "name": "shipment_row_count", "description": "Count all shipment records in the bundle.",
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}}]
+
+    def execute(self, name, arguments):
+        if name == "shipment_row_count" and arguments == {}:
+            return {"value": self.table.inspect_relation("shipments")["row_count"]}
+        return super().execute(name, arguments)
+''')
+    config = load_config(ROOT / "config" / "analyst.yaml")
+    database = SQLiteDatabase()
+    logistics = LogisticsDatasetStore(database)
+    dataset = logistics.materialize("new-tool", **public_incident_bundle())
+    table = logistics.open_session(dataset.dataset_id)
+    runner = CandidateRunner(
+        store=TableStore(database, config), logistics=logistics, config=config, history=None,
+        telemetry=PhoenixTelemetry(PhoenixConfig(enabled=False, project="test")),
+    )
+    runner.transport_factory = LocalProcessTransport
+    model = ReplyModel([
+        ModelReply(None, (ToolCall("count", "shipment_row_count", "{}"),), 10),
+        ModelReply('{"task":{"operation":"shipment_row_count"},"answer":{"value":74}}', (), 10),
+    ])
+    result = runner._execute_sandbox(source, "Count all shipment records.", "new-tool-run", table, model,
+                                     LogisticsTools(table, config), input_kind="logistics_bundle")
+    assert result.outcome == "answered", result.error
+    assert result.answer == {"value": 74}
+    assert result.interpreted_task == {"operation": "shipment_row_count"}
+    assert result.model_calls == 2 and result.tool_calls == 1

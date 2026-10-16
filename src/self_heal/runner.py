@@ -10,8 +10,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from harness.agent import RunResult, logistics_capability_request
-from harness.logistics import LogisticsTools
+from harness.agent import RunResult
+from harness.logistics import TOOL_NAME, LogisticsTools, validate_logistics_task
 from harness.tools import AnalystTools
 from evals.analyst.oracle import OracleError, _validate_task
 from self_heal.contracts import (
@@ -285,6 +285,7 @@ class CandidateRunner:
         begun = time.monotonic()
         model_calls = tool_calls = tokens = observed_tools = 0
         payload = None
+        logistics_results = []
         error = None
         try:
             with self.transport_factory(self, harness_dir) as transport:
@@ -414,6 +415,8 @@ class CandidateRunner:
                                 or not isinstance(value, dict)
                             ):
                                 raise RunnerError("Invalid tool envelope")
+                            if input_kind == "logistics_bundle" and name == TOOL_NAME and "value" in value:
+                                logistics_results.append((arguments, value))
                             record = getattr(tools, "record_remote_tool", None)
                             if callable(record):
                                 record(name, arguments, value)
@@ -444,21 +447,28 @@ class CandidateRunner:
                 error = "Candidate returned an invalid answer envelope"
             else:
                 if input_kind == "logistics_bundle":
-                    expected = _logistics_task_for(invocation)
-                    if expected is None or interpreted != expected:
+                    expected = validate_logistics_task(invocation if isinstance(invocation, dict) else interpreted)
+                    if isinstance(invocation, dict) and (expected is None or interpreted != expected):
                         error = "Candidate returned a task outside the protected logistics contract"
-                    if error is None and not _valid_answer(answer, grouped=False):
+                    if error is None and not _valid_answer(answer, grouped="groups" in answer):
                         error = "Candidate returned an invalid answer shape"
+                    if error is None and expected is not None and not any(
+                        arguments == {key: expected[key] for key in ("warehouse_number", "relative_day", "threshold")}
+                        and answer == {"value": value["value"]}
+                        for arguments, value in logistics_results
+                    ):
+                        error = "Candidate answer lacks matching observed logistics tool evidence"
                     if error is None and observed_tools == 0:
                         error = "Candidate did not execute an observed logistics tool"
-                    if error is None and not table.completed_shipment_scan(
+                    if error is None and expected is not None and not table.completed_shipment_scan(
                         interpreted["warehouse_number"],
                         interpreted["relative_day"],
                     ):
                         error = "Required shipment rows were not fully read"
                 else:
                     try:
-                        _validate_task(interpreted, self.config)
+                        if isinstance(invocation, dict) or "metric" in interpreted:
+                            _validate_task(interpreted, self.config)
                     except OracleError:
                         error = (
                             "Candidate returned a task outside the protected contract"
@@ -470,7 +480,7 @@ class CandidateRunner:
                     ):
                         error = "Candidate changed the requested structured task"
                     if error is None and not _valid_answer(
-                        answer, grouped=interpreted.get("group_by") is not None
+                        answer, grouped="groups" in answer
                     ):
                         error = "Candidate returned an invalid answer shape"
                     if error is None and not table.completed_scan(
@@ -499,6 +509,7 @@ class CandidateRunner:
             limitation_reason=payload.get("limitation_reason")
             if outcome == "unsupported"
             else None,
+            capability_request=payload.get("capability_request") if isinstance(payload.get("capability_request"), dict) else None,
         )
 
 
@@ -515,34 +526,3 @@ def _valid_answer(answer: dict[str, Any], *, grouped: bool) -> bool:
             )
         )
     return set(answer) == {"value"} and type(answer.get("value")) is int
-
-
-def _logistics_task_for(invocation: dict[str, Any] | str) -> dict[str, Any] | None:
-    """Return the one canonical task a logistics candidate may execute."""
-
-    if isinstance(invocation, str):
-        request = logistics_capability_request(invocation)
-        if request is None:
-            return None
-        return {
-            key: request[key]
-            for key in (
-                "operation",
-                "warehouse_number",
-                "relative_day",
-                "threshold",
-            )
-        }
-    required = {"operation", "warehouse_number", "relative_day", "threshold"}
-    if set(invocation) != required:
-        return None
-    if (
-        invocation["operation"] != "count_customers_with_shipment_count_gt"
-        or type(invocation["warehouse_number"]) is not int
-        or invocation["warehouse_number"] < 1
-        or invocation["relative_day"] != "yesterday"
-        or type(invocation["threshold"]) is not int
-        or invocation["threshold"] < 0
-    ):
-        return None
-    return dict(invocation)

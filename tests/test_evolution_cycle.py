@@ -211,6 +211,8 @@ class ProposalModel:
         self.replies = iter(replies)
 
     def complete(self, messages, tools):
+        if "Verify question meaning" in messages[0]["content"]:
+            return ModelReply('{"matches":true}')
         return ModelReply(json.dumps(next(self.replies)))
 
 
@@ -705,3 +707,33 @@ def test_reproduction_grades_task_failure_and_excludes_infrastructure(
     assert result["status"] == expected_status, result
     if expected_status == "open":
         assert history.active_version(config.task_family) is None
+
+
+@pytest.mark.parametrize("verdict, expected", [(True, True), (False, False)])
+def test_oracle_semantics_are_verified_independently_of_question_vocabulary(verdict, expected):
+    from self_heal.controller import _question_matches_task
+
+    class Verifier:
+        def complete(self, messages, tools):
+            self.messages = messages
+            assert tools == []
+            return ModelReply(json.dumps({"matches": verdict}))
+
+    verifier = Verifier()
+    assert _question_matches_task(verifier, "Uncommitted stock at every depot?",
+                                  {"metric": "available", "group_by": "warehouse"}, load_config()) is expected
+    payload = json.loads(verifier.messages[1]["content"])
+    assert payload["question"] == "Uncommitted stock at every depot?"
+    assert payload["task"] == {"metric": "available", "group_by": "warehouse"}
+
+
+@pytest.mark.parametrize("reply", ['{}', '{"matches":"yes"}', 'not json'])
+def test_invalid_independent_oracle_verdict_blocks_evolution(reply):
+    from self_heal.controller import EvolutionBlocked, _question_matches_task
+
+    class Verifier:
+        def complete(self, *_args):
+            return ModelReply(reply)
+
+    with pytest.raises(EvolutionBlocked):
+        _question_matches_task(Verifier(), "Count stock", {"metric": "on_hand"}, load_config())

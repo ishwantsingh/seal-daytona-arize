@@ -136,7 +136,7 @@ def main():
     try:
         result = agent.run(initial["invocation"], run_id=initial["run_id"])
         payload = {key: getattr(result, key, None) for key in (
-            "answer", "error", "outcome", "interpreted_task", "limitation_kind", "limitation_reason"
+            "answer", "error", "outcome", "interpreted_task", "limitation_kind", "limitation_reason", "capability_request"
         )}
         rpc({"type": "result", "value": payload})
     except BaseException as exc:

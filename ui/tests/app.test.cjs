@@ -314,7 +314,7 @@ test("pending chat prevents duplicate requests, captures its source, and preserv
   assert.match(reply.textContent, /Running analysis/);
   assert.equal(reply.getAttribute("aria-busy"), "true");
   assert.equal(button.disabled, true);
-  assert.equal(d.querySelector("[data-new-analysis]").disabled, true);
+  assert.equal(d.querySelector("[data-reset-chat]").disabled, false);
   source.value = "logistics:logistics";
   source.dispatchEvent(new w.Event("change"));
   question.value = "Next draft";
@@ -522,7 +522,7 @@ test("failed requests leave an inline reply and retry without overwriting a newe
   assert.equal(d.querySelectorAll('[data-chat-role="assistant"]').length, 2);
   assert.equal(question.value, "");
 });
-test("chat treats question and response HTML as text and New analysis clears the conversation", async (t) => {
+test("chat treats question and response HTML as text and Reset chat clears the conversation", async (t) => {
   const unsafe = '<img src=x onerror="alert(1)">';
   const { w, d } = await setup(t, {
     "/api/runs": (_, options) => options.method === "POST" ? { ...run("html"), message: unsafe } : { runs: [] },
@@ -544,7 +544,7 @@ test("chat treats question and response HTML as text and New analysis clears the
   assert.equal(d.querySelector(".ask-heading").hidden, false);
   assert.equal(question.value, "");
   assert.equal(w.sessionStorage.getItem("selfHealLastQuestion"), "");
-  assert.equal(d.querySelector("[data-new-analysis]").hidden, true);
+  assert.equal(d.querySelector("[data-reset-chat]").hidden, false);
   assert.equal(d.activeElement, question);
   question.value = "   \n ";
   d.querySelector("#analysis-form").requestSubmit();
@@ -878,4 +878,55 @@ test("activation alone never claims that the original question now succeeds", as
     /no verification run was recorded/,
   );
   assert.equal(d.querySelector("[data-evolve-verification] .answered"), null);
+});
+
+
+test("Reset chat clears pending state and ignores late responses after a new request", async (t) => {
+  const pending = [];
+  const { w, d } = await setup(t, {
+    "/api/runs": (_, options) => options.method === "POST"
+      ? new Promise((resolve, reject) => pending.push({ resolve, reject })) : { runs: [] },
+  }, "#ask");
+  const question = d.querySelector("#question"), form = d.querySelector("#analysis-form"),
+    send = d.querySelector("[data-run-button]"), reset = d.querySelector("[data-reset-chat]"),
+    scroll = d.querySelector("[data-chat-scroll]");
+  assert.equal(reset.textContent.trim(), "Reset chat");
+  assert.equal(reset.hidden, false);
+  question.value = "Old question";
+  form.requestSubmit();
+  question.value = "Old draft";
+  question.dispatchEvent(new w.Event("input"));
+  scroll.scrollTop = 250;
+  scroll.dispatchEvent(new w.Event("scroll"));
+  reset.click();
+  await tick();
+  assert.equal(question.value, "");
+  assert.equal(scroll.scrollTop, 0);
+  assert.equal(send.disabled, false);
+  assert.equal(send.hasAttribute("aria-busy"), false);
+  assert.equal(send.getAttribute("aria-label"), "Send question");
+  assert.equal(d.querySelectorAll("[data-chat-role]").length, 0);
+  assert.equal(d.querySelector("#data-source").value, "inventory:inventory");
+  assert.equal(JSON.parse(w.localStorage.getItem("selfHealChat")).scrollTop, 0);
+  question.value = "New question";
+  form.requestSubmit();
+  pending[0].resolve({ ...run("old"), message: "Old answer" });
+  await tick();
+  assert.equal(send.disabled, true);
+  assert.equal(d.querySelectorAll("[data-chat-role]").length, 2);
+  assert.doesNotMatch(d.querySelector("[data-chat-messages]").textContent, /Old answer|Old question/);
+  pending[1].resolve({ ...run("new"), message: "New answer" });
+  await tick();
+  assert.equal(send.disabled, false);
+  assert.match(d.querySelector("[data-chat-messages]").textContent, /New answer/);
+  assert.doesNotMatch(w.localStorage.getItem("selfHealChat"), /Old answer|Old question|Old draft/);
+
+  question.value = "Failing question";
+  form.requestSubmit();
+  reset.click();
+  pending[2].reject(new Error("Late failure"));
+  await tick();
+  assert.equal(question.value, "");
+  assert.equal(d.querySelectorAll("[data-chat-role]").length, 0);
+  assert.deepEqual(JSON.parse(w.localStorage.getItem("selfHealChat")).messages, []);
 });

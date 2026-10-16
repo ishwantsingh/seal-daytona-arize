@@ -78,7 +78,7 @@ def test_natural_question_is_interpreted_then_answered_with_shared_budget():
     assert result.interpreted_task == {"metric": "available", "filter_field": "warehouse", "filter_value": "East"}
     assert result.model_calls == 5
     assert result.total_tokens == 450
-    assert model.seen[0][1] == []
+    assert {tool["function"]["name"] for tool in model.seen[0][1]} == {"inspect_table", "read_rows", "calculate"}
     assert "Original question:" in model.seen[1][0][1]["content"]
 
 
@@ -90,7 +90,7 @@ def test_natural_question_rejects_ambiguous_or_invalid_interpretation():
     assert ambiguous.error is None
     assert ambiguous.answer is None
     assert ambiguous.limitation_kind == "capability_gap"
-    assert ambiguous.limitation_reason == "Question is ambiguous or unsupported"
+    assert ambiguous.limitation_reason == "unclear metric"
     assert ambiguous.model_calls == 1
     assert ambiguous.tool_calls == 0
     unsupported = make_agent(ScriptedModel([ModelReply('{"metric":"revenue"}', (), 40)])).run(
@@ -210,7 +210,7 @@ def test_model_call_limit_and_invalid_final_answer_fail_clearly():
     invalid = make_agent(ScriptedModel([ModelReply("not json")])).run({"metric": "on_hand"})
     assert invalid.error == "Model final answer is not JSON"
     guessed = make_agent(ScriptedModel([ModelReply('{"value":18}')])).run({"metric": "available"})
-    assert guessed.error == "Required table rows were not fully read"
+    assert guessed.error == "Answer requires successful tool evidence"
     assert guessed.answer is None
 
 
@@ -237,3 +237,61 @@ def test_unregistered_tool_and_invalid_calculation_are_rejected():
         pass
     else:
         raise AssertionError("Invalid calculation was accepted")
+
+
+def test_natural_request_can_use_tools_without_an_inventory_total_task():
+    model = ScriptedModel([
+        call("read_rows", {"limit": 4}, 1),
+        call("read_rows", {"limit": 4, "cursor": "NEXT"}, 2),
+        ModelReply('{"task":{"operation":"count_rows"},"answer":{"value":6}}'),
+    ])
+    agent = make_agent(model)
+    original_complete = model.complete
+
+    def with_cursor(messages, tools):
+        reply = original_complete(messages, tools)
+        if reply.tool_calls and '"NEXT"' in reply.tool_calls[0].arguments:
+            cursor = json.loads(messages[-1]["content"])["next_cursor"]
+            return call("read_rows", {"limit": 4, "cursor": cursor}, 2)
+        return reply
+
+    model.complete = with_cursor
+    result = agent.run("Count the records in this dataset.")
+    assert result.outcome == "answered", result.error
+    assert result.answer == {"value": 6}
+    assert result.interpreted_task == {"operation": "count_rows"}
+    assert result.model_calls == 3 and result.table_pages == 2
+
+
+def test_natural_tool_errors_are_returned_to_the_model_for_recovery():
+    model = ScriptedModel([
+        call("read_rows", {"limit": -1}, 1),
+        call("read_rows", {"limit": 4, "filter_field": "warehouse", "filter_value": "East"}, 2),
+        ModelReply('{"task":{"metric":"available","filter_field":"warehouse","filter_value":"East"},"answer":{"value":18}}'),
+    ])
+    result = make_agent(model).run("Available stock at East, please.")
+    assert result.outcome == "answered", result.error
+    assert result.answer == {"value": 18}
+    assert result.tool_calls == 2
+    assert "error" in json.loads(model.seen[1][0][-1]["content"])
+
+
+def test_clarification_is_distinct_from_a_capability_gap():
+    model = ScriptedModel([ModelReply('{"clarification":"Which warehouse and reporting period?"}')])
+    result = make_agent(model).run("How much did they send?")
+    assert result.outcome == "unsupported"
+    assert result.limitation_kind == "clarification_required"
+    assert result.limitation_reason == "Which warehouse and reporting period?"
+    assert result.capability_request is None
+
+
+@pytest.mark.parametrize("reply", [
+    '{"unsupported":{}}',
+    '{"unsupported":{"reason":"Missing data","capability_request":[]}}',
+    '{"unsupported":{"reason":" "}}',
+])
+def test_malformed_gap_reply_is_an_error(reply):
+    result = make_agent(ScriptedModel([ModelReply(reply)])).run("Count shipments.")
+    assert result.outcome == "error"
+    assert result.limitation_kind is None
+    assert result.capability_request is None
