@@ -117,3 +117,27 @@ def test_unsupported_query_operators_and_sql_identifier_injection_fail():
             db.runs.find_one({"field": {"$where": "anything"}})
         with pytest.raises(ValueError):
             db.runs.find_one({"value'); DROP TABLE runs; --": 1})
+
+
+def test_array_exposure_query_retains_accepted_incidents_as_regressions():
+    with SQLiteDatabase() as db:
+        db.eval_cases.insert_many(
+            [
+                {
+                    "_id": "accepted",
+                    "origin": "observed_incident",
+                    "exposures": [{"role": "original"}, {"role": "regression"}],
+                },
+                {
+                    "_id": "unaccepted",
+                    "origin": "observed_incident",
+                    "exposures": [{"role": "original"}],
+                },
+            ]
+        )
+        rows = list(
+            db.eval_cases.find(
+                {"origin": "observed_incident", "exposures.role": "regression"}
+            )
+        )
+        assert [row["_id"] for row in rows] == ["accepted"]

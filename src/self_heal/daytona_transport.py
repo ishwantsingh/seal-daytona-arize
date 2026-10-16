@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import io
+import asyncio
+import queue
+import threading
 import json
 import shlex
 import time
@@ -10,7 +13,7 @@ import uuid
 import zipfile
 from pathlib import Path
 
-from daytona import CreateSandboxFromSnapshotParams, SessionExecuteRequest
+from daytona import AsyncDaytona, CreateSandboxFromSnapshotParams, SessionExecuteRequest
 
 
 class DaytonaTransport:
@@ -19,6 +22,11 @@ class DaytonaTransport:
         self.sandbox = None
         self.session_id = "seal-" + uuid.uuid4().hex
         self.offset = 0
+        self.chunks = queue.Queue(maxsize=64)
+        self.stream_error = None
+        self.loop = None
+        self.stream_task = None
+        self.thread = None
         self.pending = ""
 
     def __enter__(self):
@@ -85,7 +93,10 @@ class DaytonaTransport:
                 timeout=10,
             )
             self.command_id = response.cmd_id
-            self.runner.last_sandbox_id = self.sandbox.id
+            self.thread = threading.Thread(
+                target=self._stream_logs, daemon=True, name="seal-daytona-logs"
+            )
+            self.thread.start()
             return self
         except BaseException:
             self.close()
@@ -99,6 +110,33 @@ class DaytonaTransport:
             request_timeout=10,
         )
 
+    def _stream_logs(self):
+        async def follow():
+            self.loop = asyncio.get_running_loop()
+            self.stream_task = asyncio.current_task()
+
+            def stdout(chunk):
+                self.chunks.put_nowait(chunk)
+
+            try:
+                factory = (
+                    getattr(self.runner, "async_daytona_factory", None) or AsyncDaytona
+                )
+                async with factory() as client:
+                    sandbox = await client.get(self.sandbox.id)
+                    await sandbox.process.get_session_command_logs_async(
+                        self.session_id, self.command_id, stdout, lambda chunk: None
+                    )
+                self.stream_error = RuntimeError(
+                    "Daytona log stream ended before the result"
+                )
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                self.stream_error = exc
+
+        asyncio.run(follow())
+
     def receive(self, timeout):
         deadline = time.monotonic() + timeout
         while True:
@@ -110,27 +148,26 @@ class DaytonaTransport:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError("Task time budget exceeded")
-            logs = self.sandbox.process.get_session_command_logs(
-                self.session_id, self.command_id, request_timeout=min(10, remaining)
-            )
-            stdout = logs.stdout or ""
-            if len(stdout) < self.offset:
-                raise RuntimeError("Daytona logs were truncated")
-            self.pending += stdout[self.offset :]
-            self.offset = len(stdout)
+            try:
+                chunk = self.chunks.get(timeout=min(remaining, 0.1))
+            except queue.Empty:
+                if self.stream_error is not None:
+                    raise self.stream_error
+                continue
+            self.pending += chunk
+            self.offset += len(chunk.encode())
             if len(self.pending.encode()) > 2_000_000 or self.offset > 16_000_000:
                 raise ValueError("Candidate bridge output exceeded size limit")
-            if "\n" not in self.pending:
-                status = self.sandbox.process.get_session_command(
-                    self.session_id,
-                    self.command_id,
-                    request_timeout=min(10, max(1, remaining)),
-                )
-                if status.exit_code is not None:
-                    raise RuntimeError("Candidate exited without a result")
-                time.sleep(min(0.05, remaining))
 
     def close(self):
+        if (
+            self.loop is not None
+            and self.stream_task is not None
+            and self.loop.is_running()
+        ):
+            self.loop.call_soon_threadsafe(self.stream_task.cancel)
+        if self.thread is not None:
+            self.thread.join(timeout=2)
         if self.sandbox is not None:
             sandbox, self.sandbox = self.sandbox, None
             try:

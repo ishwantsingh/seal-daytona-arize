@@ -66,6 +66,16 @@ def _where(query):
             )
             args.extend(arg for _, vals in sub for arg in vals)
             continue
+        # Exposure history is an array of objects. Retained failures become
+        # regressions by querying any matching role, not an array index.
+        if field == "exposures.role":
+            if isinstance(value, dict):
+                raise ValueError("Exposure roles support exact equality only")
+            clauses.append(
+                "EXISTS (SELECT 1 FROM json_each(document, '$.exposures') AS exposure WHERE json_extract(exposure.value, '$.role') IS ?)"
+            )
+            args.append(value)
+            continue
         expr = _expr(field)
         conditions = value if isinstance(value, dict) else {"$eq": value}
         for op, operand in conditions.items():

@@ -267,3 +267,48 @@ def test_protected_evaluation_is_published_as_code_annotation():
         history.evaluations.find_one({"trial_id": trial.trial_id})["phoenix"]["status"]
         == "available"
     )
+
+
+def test_root_span_finalization_failure_never_replays_completed_model_calls(
+    monkeypatch,
+):
+    from self_heal import telemetry as module
+
+    executor, tables, config, _, _, _ = make_executor()
+    original = module._PhoenixSpan.end
+
+    def fail_root(self, *, outputs):
+        if "outcome" in outputs:
+            raise RuntimeError("span finalization failed")
+        return original(self, outputs=outputs)
+
+    monkeypatch.setattr(module._PhoenixSpan, "end", fail_root)
+    execution = run_question(
+        executor,
+        tables,
+        config,
+        supported_model(),
+        "How many available units are in East?",
+    )
+    assert execution.result.answer == {"value": 18}
+    assert execution.trace.status == "incomplete"
+    assert execution.trace.error_type == "RuntimeError"
+
+
+def test_telemetry_initialization_failure_runs_agent_once(monkeypatch):
+    executor, tables, config, _, _, _ = make_executor()
+
+    def fail():
+        raise ConnectionError("offline")
+
+    monkeypatch.setattr(executor.telemetry, "_dependencies", fail)
+    execution = run_question(
+        executor,
+        tables,
+        config,
+        supported_model(),
+        "How many available units are in East?",
+    )
+    assert execution.result.answer == {"value": 18}
+    assert execution.trace.status == "incomplete"
+    assert execution.trace.error_type == "ConnectionError"

@@ -1,4 +1,5 @@
 import io
+import asyncio
 import json
 import zipfile
 from pathlib import Path
@@ -32,11 +33,12 @@ class FakeProcess:
     def send_session_command_input(self, session_id, command_id, data, **kwargs):
         self.inputs.append(json.loads(data))
 
-    def get_session_command_logs(self, *args, **kwargs):
-        return SimpleNamespace(stdout=self.logs.pop(0))
-
-    def get_session_command(self, *args, **kwargs):
-        return SimpleNamespace(exit_code=None)
+    async def get_session_command_logs_async(
+        self, session_id, command_id, on_stdout, on_stderr
+    ):
+        for chunk in self.logs:
+            on_stdout(chunk)
+        await asyncio.Event().wait()
 
 
 def make_runner():
@@ -59,8 +61,20 @@ def make_runner():
             self.deleted.append(value.id)
 
     client = Client()
+
+    class AsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def get(self, identifier):
+            return sandbox
+
     runner = SimpleNamespace(
         repository=ROOT,
+        async_daytona_factory=AsyncClient,
         snapshot=lambda: SimpleNamespace(id="immutable-snapshot"),
         daytona=lambda: client,
         last_sandbox_id=None,
@@ -94,9 +108,9 @@ def test_stage_only_harness_and_runtime_with_no_credentials_or_oracle():
     assert client.deleted == ["sandbox-1"]
 
 
-def test_cumulative_partial_logs_yield_each_rpc_once():
+def test_streamed_partial_logs_yield_each_rpc_once():
     runner, client, process, _ = make_runner()
-    process.logs = ['{"type":"ta', '{"type":"table"}\n{"type":"result"}\n']
+    process.logs = ['{"type":"ta', 'ble"}\n{"type":"result"}\n']
     with DaytonaTransport(runner, ROOT / "harness") as transport:
         assert transport.receive(1) == {"type": "table"}
         assert transport.receive(1) == {"type": "result"}
@@ -133,12 +147,9 @@ def test_cleanup_failure_is_explicit_and_cannot_report_success():
     assert runner.cleanup_error == "ConnectionError"
 
 
-def test_oversized_rpc_and_truncated_logs_are_rejected():
-    for logs, message in [(["x" * 2_000_001], "size limit"), ([""], "truncated")]:
-        runner, _, process, _ = make_runner()
-        process.logs = logs
-        with pytest.raises((ValueError, RuntimeError), match=message):
-            with DaytonaTransport(runner, ROOT / "harness") as transport:
-                if message == "truncated":
-                    transport.offset = 10
-                transport.receive(1)
+def test_oversized_rpc_is_rejected():
+    runner, _, process, _ = make_runner()
+    process.logs = ["x" * 2_000_001]
+    with pytest.raises(ValueError, match="size limit"):
+        with DaytonaTransport(runner, ROOT / "harness") as transport:
+            transport.receive(1)
