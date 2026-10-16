@@ -146,7 +146,6 @@ def test_reviewed_logistics_tool_matches_oracle_across_thresholds_and_pages():
     for warehouse, threshold in ((3, 15), (3, 16), (3, 17), (2, 1)):
         session = store.open_session(info.dataset_id)
         tools = LogisticsTools(session, config)
-        question = f"How many customers sent more than {threshold} shipments from warehouse {warehouse} yesterday?"
         task = {"operation": "count_customers_with_shipment_count_gt",
                 "warehouse_number": warehouse, "relative_day": "yesterday", "threshold": threshold}
         result = LogisticsAgent(NoCallsModel(), tools, config).run(task)
