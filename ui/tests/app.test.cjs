@@ -15,6 +15,7 @@ const run = (id, outcome = "answered") => ({
   message: "18 available units",
   resources: { elapsed_seconds: 0.2 },
   trace: { status: "disabled" },
+  evolution_job_id: null,
 });
 const routes = {
   "/api/health": {
@@ -30,7 +31,7 @@ const routes = {
   "/api/versions": { versions: [], base_version: "v1" },
   "/api/harness-workflows": { workflows: [] },
 };
-async function setup(t, overrides = {}, hash = "", draft = "") {
+async function setup(t, overrides = {}, hash = "", draft = "", savedChat, beforeLoad) {
   const dom = new JSDOM(html, {
     url: "http://localhost/" + hash,
     runScripts: "outside-only",
@@ -42,6 +43,9 @@ async function setup(t, overrides = {}, hash = "", draft = "") {
   w.scrollTo = () => {};
   w.HTMLElement.prototype.scrollTo = () => {};
   w.sessionStorage.setItem("selfHealLastQuestion", draft);
+  if (savedChat !== undefined)
+    w.localStorage.setItem("selfHealChat", typeof savedChat === "string" ? savedChat : JSON.stringify(savedChat));
+  if (beforeLoad) beforeLoad(w);
   w.fetch = async (url, options = {}) => {
     calls.push([url, options]);
     const key = String(url).split("?")[0],
@@ -76,7 +80,7 @@ test("navigation isolates pages and retains the draft when inspecting a linked r
     d.querySelector("[data-run-question]").textContent,
     "Question a",
   );
-  d.querySelector("[data-new-analysis]").click();
+  d.querySelector('[data-nav="ask"]').click();
   await tick();
   assert.equal(d.querySelector("#ask").hidden, false);
   assert.equal(d.querySelector("#question").value, "My unfinished\nquestion");
@@ -155,10 +159,363 @@ test("failed analysis preserves input and re-enables submit; Ctrl+Enter submits"
   );
   assert.equal(question.value, "Draft question");
   assert.match(
-    d.querySelector("[data-analysis-error]").textContent,
+    d.querySelector('[data-chat-role="assistant"]').textContent,
     /Execution unavailable/,
   );
   assert.equal(d.querySelector("[data-run-button]").disabled, false);
+});
+test("chat appends question-answer pairs, keeps Ask open, and links to recorded evidence", async (t) => {
+  let next = 0;
+  const { w, d, calls } = await setup(t, {
+    "/api/runs": (_, options) => options.method === "POST"
+      ? { ...run(String(++next)), message: "Answer " + next }
+      : { runs: [run("1")] },
+    "/api/runs/1": run("1"),
+  }, "#ask");
+  const question = d.querySelector("#question");
+  assert.equal(d.querySelector("#runs").hidden, true);
+  assert.equal(d.querySelector("[data-examples]").hidden, false);
+  for (const prompt of ["First question", "Second question"]) {
+    question.value = prompt;
+    d.querySelector("#analysis-form").requestSubmit();
+    await tick();
+    assert.equal(w.location.hash, "#ask");
+    assert.equal(d.querySelector("#run-details").hidden, true);
+    assert.equal(d.querySelector("#ask").hidden, false);
+    assert.equal(d.querySelector("[data-examples]").hidden, true);
+    assert.equal(d.querySelector(".ask-heading").hidden, true);
+    assert.equal(question.value, "");
+    assert.equal(w.sessionStorage.getItem("selfHealLastQuestion"), "");
+    assert.equal(d.activeElement, question);
+    assert.equal(d.querySelector("#suggestions").hidden, true);
+    assert.equal(d.querySelector("[data-announcement]").textContent, "Analyst replied");
+  }
+  const messages = [...d.querySelectorAll("[data-chat-role] p")].map(node => node.textContent);
+  assert.deepEqual(messages, ["First question", "Answer 1", "Second question", "Answer 2"]);
+  assert.deepEqual(calls.filter(([, options]) => options.method === "POST")
+    .map(([, options]) => JSON.parse(options.body)), [
+      { question: "First question", input_kind: "inventory_table", dataset_id: "inventory" },
+      { question: "Second question", input_kind: "inventory_table", dataset_id: "inventory" },
+    ]);
+  assert.equal(calls.some(([url]) => url === "/api/runs/1"), false);
+  d.querySelector('[data-chat-role="assistant"] a').click();
+  await tick();
+  assert.equal(d.querySelector("#run-details").hidden, false);
+  d.querySelector('[data-nav="ask"]').click();
+  await tick();
+  assert.equal(d.querySelectorAll("[data-chat-role]").length, 4);
+  assert.equal(d.querySelector('[data-chat-role="assistant"] p').textContent, "Answer 1");
+  assert.equal(d.querySelector('[data-chat-role="assistant"]').className, "chat-message");
+  assert.equal(d.querySelector('[data-chat-role="assistant"] a').getAttribute("href"), "#run-details/1");
+  assert.equal(d.querySelector('[data-nav="ask"]').getAttribute("aria-current"), "page");
+});
+test("pending chat prevents duplicate requests, captures its source, and preserves a new draft", async (t) => {
+  let resolve;
+  const { w, d, calls } = await setup(t, {
+    "/api/datasets": { datasets: [
+      { id: "inventory", input_kind: "inventory_table" },
+      { id: "logistics", input_kind: "logistics_bundle" },
+    ] },
+    "/api/runs": (_, options) => options.method === "POST"
+      ? new Promise(done => { resolve = done; }) : { runs: [] },
+  });
+  const question = d.querySelector("#question"), source = d.querySelector("#data-source"),
+    form = d.querySelector("#analysis-form"), button = d.querySelector("[data-run-button]");
+  source.value = "inventory:inventory";
+  source.dispatchEvent(new w.Event("change"));
+  question.value = "Sent question";
+  form.requestSubmit();
+  const reply = d.querySelector('[data-chat-role="assistant"]');
+  assert.match(reply.textContent, /Running analysis/);
+  assert.equal(reply.getAttribute("aria-busy"), "true");
+  assert.equal(button.disabled, true);
+  assert.equal(d.querySelector("[data-new-analysis]").disabled, true);
+  source.value = "logistics:logistics";
+  source.dispatchEvent(new w.Event("change"));
+  question.value = "Next draft";
+  question.dispatchEvent(new w.Event("input"));
+  form.dispatchEvent(new w.Event("submit", { bubbles: true, cancelable: true }));
+  const posts = calls.filter(([, options]) => options.method === "POST");
+  assert.equal(posts.length, 1);
+  assert.equal(JSON.parse(posts[0][1].body).dataset_id, "inventory");
+  assert.match(d.querySelector('[data-chat-role="user"]').textContent, /Inventory · inventory/);
+  resolve(run("pending"));
+  await tick();
+  assert.equal(question.value, "Next draft");
+  assert.equal(w.sessionStorage.getItem("selfHealLastQuestion"), "Next draft");
+  assert.equal(source.value, "logistics:logistics");
+  assert.equal(reply.hasAttribute("aria-busy"), false);
+  assert.equal(button.disabled, false);
+  assert.equal(d.querySelector("[data-new-analysis]").disabled, false);
+});
+test("reload restores full replies, errors, links, draft, and source even when opening a run first", async (t) => {
+  const sources = { datasets: [
+    { id: "inventory", input_kind: "inventory_table" },
+    { id: "logistics", input_kind: "logistics_bundle" },
+  ] };
+  let next = 0;
+  const overrides = {
+    "/api/datasets": sources,
+    "/api/runs": (_, options) => {
+      if (options.method !== "POST") return { runs: [] };
+      if (++next === 3) throw Error("Offline");
+      return next === 1 ? { ...run("1"), message: "Full answer" }
+        : { ...run("2", "unsupported"), message: "Tool required", evolution_job_id: "repair" };
+    },
+    "/api/runs/1": { ...run("1"), dataset: { id: "logistics", input_kind: "logistics_bundle" } },
+  };
+  const first = await setup(t, overrides);
+  const picker = first.d.querySelector("#data-source");
+  picker.value = "inventory:inventory";
+  picker.dispatchEvent(new first.w.Event("change"));
+  for (const prompt of ["First", "Second", "Third"]) {
+    first.d.querySelector("#question").value = prompt;
+    first.d.querySelector("#analysis-form").requestSubmit();
+    await tick();
+  }
+  first.d.querySelector("#question").value = "Unsent\ndraft";
+  first.d.querySelector("#question").dispatchEvent(new first.w.Event("input"));
+  first.d.querySelector('[data-chat-role="assistant"] a').click();
+  await tick();
+  assert.equal(picker.value, "inventory:inventory");
+  const saved = first.w.localStorage.getItem("selfHealChat");
+  assert.equal(JSON.parse(saved).messages.length, 6);
+  const restored = await setup(t, overrides, "#run-details/1", "Old draft", saved);
+  assert.equal(restored.d.querySelector("#ask").hidden, true);
+  restored.d.querySelector('[data-nav="ask"]').click();
+  await tick();
+  const replies = restored.d.querySelectorAll('[data-chat-role="assistant"]');
+  assert.deepEqual([...replies].map(node => node.querySelector("p").textContent), [
+    "Full answer", "Tool required", "Analysis could not complete. Offline",
+  ]);
+  assert.equal(replies[0].querySelector(".chat-status").textContent, "Answered · 0.2 s");
+  assert.equal(replies[0].querySelector("a").getAttribute("href"), "#run-details/1");
+  assert.equal(replies[1].querySelector('a[href^="#evolve/"]').getAttribute("href"), "#evolve/repair");
+  assert.equal(replies[2].dataset.state, "error");
+  assert.equal(restored.d.querySelector("#question").value, "Unsent\ndraft");
+  assert.equal(restored.d.querySelector("#data-source").value, "inventory:inventory");
+  assert.equal(restored.calls.some(([, options]) => options.method === "POST"), false);
+  restored.d.querySelector("[data-new-analysis]").click();
+  await tick();
+  const cleared = restored.w.localStorage.getItem("selfHealChat");
+  assert.deepEqual(JSON.parse(cleared).messages, []);
+  assert.equal(JSON.parse(cleared).draft, "");
+  const fresh = await setup(t, overrides, "#ask", "", cleared);
+  assert.equal(fresh.d.querySelectorAll("[data-chat-role]").length, 0);
+  assert.equal(fresh.d.querySelector("[data-examples]").hidden, false);
+});
+test("a pending request restored after reload becomes interrupted and is never resubmitted", async (t) => {
+  let resolve;
+  const first = await setup(t, {
+    "/api/runs": (_, options) => options.method === "POST"
+      ? new Promise(done => { resolve = done; }) : { runs: [] },
+  });
+  first.d.querySelector("#question").value = "Slow question";
+  first.d.querySelector("#analysis-form").requestSubmit();
+  const saved = first.w.localStorage.getItem("selfHealChat");
+  assert.equal(JSON.parse(saved).messages[1].pending, true);
+  const restored = await setup(t, {}, "#ask", "", saved);
+  const reply = restored.d.querySelector('[data-chat-role="assistant"]');
+  assert.match(reply.textContent, /Request interrupted/);
+  assert.match(reply.querySelector("p").textContent, /Check Runs/);
+  assert.equal(reply.hasAttribute("aria-busy"), false);
+  assert.equal(restored.d.querySelector("[data-run-button]").disabled, false);
+  assert.equal(restored.calls.some(([, options]) => options.method === "POST"), false);
+  assert.equal(JSON.parse(restored.w.localStorage.getItem("selfHealChat")).messages[1].pending, false);
+  resolve(run("slow"));
+  await tick();
+});
+test("restored content is text and saved scroll position survives route changes and reload", async (t) => {
+  const unsafe = '<img src=x onerror="alert(1)">';
+  const saved = {
+    version: 1, draft: unsafe, source: { id: "inventory", input_kind: "inventory_table" }, scrollTop: 240,
+    messages: [{ role: "assistant", text: unsafe, source: null, status: "Answered", runId: "unsafe/#id" }],
+  };
+  const { w, d } = await setup(t, {}, "#ask", "", saved);
+  await tick();
+  const reply = d.querySelector('[data-chat-role="assistant"]');
+  assert.equal(reply.querySelector("p").textContent, unsafe);
+  assert.equal(reply.querySelector("img"), null);
+  assert.equal(reply.querySelector("a").getAttribute("href"), "#run-details/unsafe%2F%23id");
+  const scroll = d.querySelector("[data-chat-scroll]");
+  assert.equal(scroll.scrollTop, 240);
+  scroll.scrollTop = 320;
+  scroll.dispatchEvent(new w.Event("scroll"));
+  d.querySelector('[data-nav="runs"]').click();
+  await tick();
+  assert.equal(JSON.parse(w.localStorage.getItem("selfHealChat")).scrollTop, 320);
+  d.querySelector('[data-nav="ask"]').click();
+  await tick();
+  assert.equal(scroll.scrollTop, 320);
+});
+test("invalid saved state and unavailable browser storage do not break chat", async (t) => {
+  for (const invalid of ["not json", { version: 2 }, {
+    version: 1, messages: [{ role: "script", text: "Bad state" }], draft: "", source: null,
+  }]) {
+    const { d } = await setup(t, {}, "#ask", "Existing draft", invalid);
+    assert.equal(d.querySelectorAll("[data-chat-role]").length, 0);
+    assert.equal(d.querySelector("#question").value, "Existing draft");
+  }
+  const { d } = await setup(t, {
+    "/api/runs": (_, options) => options.method === "POST" ? run("nostorage") : { runs: [] },
+  }, "#ask", "", undefined, w => {
+    Object.defineProperty(w, "localStorage", {
+      get() { throw Error("Storage unavailable"); },
+    });
+  });
+  d.querySelector("#question").value = "Question";
+  d.querySelector("#analysis-form").requestSubmit();
+  await tick();
+  assert.equal(d.querySelector('[data-chat-role="assistant"] p').textContent, "18 available units");
+  assert.equal(d.querySelector("[data-run-button]").disabled, false);
+});
+test("chat presents capability gaps, execution errors, and numeric or grouped answers without redirects", async (t) => {
+  const responses = [
+    { ...run("gap", "unsupported"), message: "", limitation_reason: "Tool required", evolution_job_id: "job/1" },
+    { ...run("error", "error"), message: "", error: "Runner unavailable" },
+    { ...run("zero"), message: "", answer: { value: 0 } },
+    { ...run("groups"), message: "", answer: { groups: { East: 18, West: 7 } } },
+  ];
+  let next = 0;
+  const { w, d } = await setup(t, {
+    "/api/runs": (_, options) => options.method === "POST" ? responses[next++] : { runs: [] },
+  });
+  for (const response of responses) {
+    d.querySelector("#question").value = "Question " + response.run_id;
+    d.querySelector("#analysis-form").requestSubmit();
+    await tick();
+    assert.equal(w.location.hash, "");
+    assert.equal(d.querySelector("#ask").hidden, false);
+  }
+  const replies = d.querySelectorAll('[data-chat-role="assistant"]');
+  assert.deepEqual([...replies].map(node => node.querySelector("p").textContent), [
+    "Tool required", "Runner unavailable", '{"value":0}', '{"groups":{"East":18,"West":7}}',
+  ]);
+  assert.equal(replies[0].querySelector('a[href^="#evolve/"]').getAttribute("href"), "#evolve/job%2F1");
+});
+test("late chat replies do not navigate away from another page", async (t) => {
+  let resolve;
+  const { w, d } = await setup(t, {
+    "/api/runs": (_, options) => options.method === "POST"
+      ? new Promise(done => { resolve = done; }) : { runs: [] },
+  });
+  d.querySelector("#question").value = "Question";
+  d.querySelector("#analysis-form").requestSubmit();
+  w.location.hash = "#versions";
+  await tick();
+  resolve(run("late"));
+  await tick();
+  assert.equal(w.location.hash, "#versions");
+  assert.equal(d.querySelector("#ask").hidden, true);
+  assert.equal(d.querySelector("#versions").hidden, false);
+  assert.equal(d.querySelector('[data-chat-role="assistant"] p').textContent, "18 available units");
+});
+test("failed requests leave an inline reply and retry without overwriting a newer draft", async (t) => {
+  let reject;
+  let attempts = 0;
+  const { w, d } = await setup(t, {
+    "/api/runs": (_, options) => {
+      if (options.method !== "POST") return { runs: [] };
+      return ++attempts === 1 ? new Promise((_, fail) => { reject = fail; }) : run("retry");
+    },
+  });
+  const question = d.querySelector("#question");
+  question.value = "Original question";
+  d.querySelector("#analysis-form").requestSubmit();
+  question.value = "New draft";
+  question.dispatchEvent(new w.Event("input"));
+  reject(Error("Offline"));
+  await tick();
+  assert.equal(question.value, "New draft");
+  const failed = d.querySelector('[data-chat-role="assistant"]');
+  assert.equal(failed.dataset.state, "error");
+  assert.match(failed.textContent, /Offline/);
+  assert.equal(failed.hasAttribute("aria-busy"), false);
+  assert.equal(failed.querySelector("a"), null);
+  d.querySelector("#analysis-form").requestSubmit();
+  await tick();
+  assert.equal(d.querySelectorAll('[data-chat-role="assistant"]').length, 2);
+  assert.equal(question.value, "");
+});
+test("chat treats question and response HTML as text and New analysis clears the conversation", async (t) => {
+  const unsafe = '<img src=x onerror="alert(1)">';
+  const { w, d } = await setup(t, {
+    "/api/runs": (_, options) => options.method === "POST" ? { ...run("html"), message: unsafe } : { runs: [] },
+  }, "#ask");
+  const question = d.querySelector("#question");
+  question.value = unsafe;
+  d.querySelector("#analysis-form").requestSubmit();
+  await tick();
+  const messages = d.querySelector("[data-chat-messages]");
+  assert.equal(messages.querySelector("img"), null);
+  assert.deepEqual([...messages.querySelectorAll("p")].map(node => node.textContent), [unsafe, unsafe]);
+  question.value = "Another draft";
+  question.dispatchEvent(new w.Event("input"));
+  d.querySelector("[data-new-analysis]").click();
+  await tick();
+  assert.equal(messages.children.length, 0);
+  assert.equal(messages.hidden, true);
+  assert.equal(d.querySelector("[data-examples]").hidden, false);
+  assert.equal(d.querySelector(".ask-heading").hidden, false);
+  assert.equal(question.value, "");
+  assert.equal(w.sessionStorage.getItem("selfHealLastQuestion"), "");
+  assert.equal(d.querySelector("[data-new-analysis]").hidden, true);
+  assert.equal(d.activeElement, question);
+  question.value = "   \n ";
+  d.querySelector("#analysis-form").requestSubmit();
+  assert.equal(messages.children.length, 0);
+  assert.equal(question.validity.customError, true);
+});
+test("Enter sends, Shift+Enter and IME preserve input, and suggestions can be selected first", async (t) => {
+  const { w, d, calls } = await setup(t, {
+    "/api/runs": (_, options) => options.method === "POST" ? run("keyboard") : { runs: [] },
+  });
+  const question = d.querySelector("#question");
+  question.focus();
+  assert.equal(d.querySelector("#suggestions").hidden, true);
+  question.value = "How many available";
+  question.dispatchEvent(new w.Event("input"));
+  question.dispatchEvent(new w.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+  const newline = new w.KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true, cancelable: true });
+  question.dispatchEvent(newline);
+  assert.equal(newline.defaultPrevented, false);
+  assert.equal(question.value, "How many available");
+  const composition = new w.KeyboardEvent("keydown", { key: "Enter", isComposing: true, bubbles: true, cancelable: true });
+  question.dispatchEvent(composition);
+  assert.equal(composition.defaultPrevented, false);
+  question.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+  assert.equal(question.value, "How many available units are in the East warehouse?");
+  assert.equal(calls.filter(([, options]) => options.method === "POST").length, 0);
+  question.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+  await tick();
+  assert.equal(calls.filter(([, options]) => options.method === "POST").length, 1);
+  assert.equal(d.querySelector("[data-run-button]").getAttribute("aria-label"), "Send question");
+});
+test("sending follows the newest message while a later reply respects reading position", async (t) => {
+  let resolve;
+  const { d } = await setup(t, {
+    "/api/runs": (_, options) => options.method === "POST"
+      ? new Promise(done => { resolve = done; }) : { runs: [] },
+  });
+  const scroll = d.querySelector("[data-chat-scroll]"), scrolls = [];
+  Object.defineProperties(scroll, {
+    scrollHeight: { value: 1200 },
+    clientHeight: { value: 500 },
+  });
+  scroll.scrollTo = options => { scrolls.push(options.top); scroll.scrollTop = options.top; };
+  d.querySelector("#question").value = "First question";
+  d.querySelector("#analysis-form").requestSubmit();
+  assert.deepEqual(scrolls, [1200]);
+  scroll.scrollTop = 0;
+  resolve(run("read"));
+  await tick();
+  assert.deepEqual(scrolls, [1200]);
+  d.querySelector("#question").value = "Next question";
+  d.querySelector("#analysis-form").requestSubmit();
+  scroll.scrollTop = 700;
+  resolve(run("follow"));
+  await tick();
+  assert.deepEqual(scrolls, [1200, 1200, 1200]);
 });
 test("rejected evolution does not imply completed activation and tabs support keyboard focus", async (t) => {
   const { w, d } = await setup(
@@ -329,7 +686,7 @@ test("source switches preserve the draft and revision deep links resolve their o
     /Logistics/,
   );
   assert.ok(d.querySelector("[data-harness-workflow] svg"));
-  d.querySelector("[data-new-analysis]").click();
+  d.querySelector('[data-nav="ask"]').click();
   await tick();
   const source = d.querySelector("#data-source");
   source.value = "logistics:pending";

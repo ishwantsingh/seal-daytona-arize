@@ -3,7 +3,8 @@
   const $ = (selector) => document.querySelector(selector);
   const question = $("#question"),
     suggestions = $("#suggestions"),
-    runButton = $("[data-run-button]");
+    runButton = $("[data-run-button]"),
+    chatMessages = $("[data-chat-messages]");
   try {
     question.value = sessionStorage.getItem("selfHealLastQuestion") || "";
   } catch {}
@@ -36,6 +37,12 @@
     evolutionSequence = 0,
     harnessSequence = 0;
   const PAGE_SIZE = 10;
+  const CHAT_STORAGE_KEY = "selfHealChat";
+  const chatEntries = [];
+  let chatSource = null,
+    chatScrollTop = 0,
+    chatSaveTimer,
+    shownPage = null;
   let evaluationPage = 0,
     versionPage = 0,
     currentWorkflowId = null,
@@ -71,14 +78,28 @@
   function autosize() {
     question.style.height = "auto";
     question.style.height =
-      Math.min(320, Math.max(132, question.scrollHeight)) + "px";
+      Math.min(180, Math.max(56, question.scrollHeight)) + "px";
   }
   function saveDraft() {
     try {
       sessionStorage.setItem("selfHealLastQuestion", question.value);
     } catch {}
+    saveChat();
+  }
+  function saveChat() {
+    try {
+      localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify({
+        version: 1,
+        messages: chatEntries,
+        draft: question.value,
+        source: chatSource,
+        scrollTop: chatScrollTop,
+      }));
+    } catch {}
   }
   function syncContext(page) {
+    const source = page === "run-details" && selectedRun?.dataset
+      ? selectedRun.dataset : selectedSource;
     const family =
       page === "harness"
         ? $("[data-harness-family]").value
@@ -87,7 +108,7 @@
           : null;
     const logistics = family
       ? family === "logistics-shipment-threshold"
-      : selectedSource?.input_kind === "logistics_bundle";
+      : source?.input_kind === "logistics_bundle";
     set(
       "[data-workspace-title]",
       page === "evolve"
@@ -187,6 +208,7 @@
   }
   function updateRunButton() {
     runButton.disabled = submitting || !serviceReady || !selectedSource?.id;
+    $("[data-new-analysis]").disabled = submitting;
     runButton.title = submitting
       ? "Analysis in progress"
       : !serviceReady
@@ -195,8 +217,10 @@
           ? "Load a data source before running an analysis"
           : "Run analysis (Cmd/Ctrl + Enter)";
   }
-  function setSource(source, clearQuestion = false) {
+  function setSource(source, clearQuestion = false, remember = false) {
     selectedSource = source;
+    if (remember)
+      chatSource = source ? { id: source.id, input_kind: source.input_kind } : null;
     const logistics = source && source.input_kind === "logistics_bundle";
     examples = logistics ? logisticsExamples : inventoryExamples;
     syncContext(location.hash.slice(1).split("/")[0] || "ask");
@@ -233,6 +257,7 @@
     renderExamples();
     closeSuggestions();
     updateRunButton();
+    saveChat();
   }
   async function loadDatasets(preferredId) {
     const picker = $("#data-source");
@@ -266,7 +291,7 @@
       );
       const chosen =
         datasets.find(
-          (item) => item.id === (preferredId || selectedSource?.id),
+          (item) => item.id === (preferredId || selectedSource?.id || chatSource?.id),
         ) ||
         logistics[0] ||
         inventory[0] ||
@@ -276,7 +301,7 @@
           (chosen.input_kind === "logistics_bundle"
             ? "logistics:"
             : "inventory:") + chosen.id;
-        setSource(chosen, false);
+        setSource(chosen, false, true);
       } else {
         picker.value = "logistics:pending";
         setSource({ input_kind: "logistics_bundle", id: "" }, false);
@@ -296,6 +321,8 @@
       value === "logistics:pending"
         ? { input_kind: "logistics_bundle", id: "" }
         : datasets.find((item) => value.endsWith(":" + item.id)) || null,
+      false,
+      true,
     );
     if (location.hash === "#versions") loadVersions();
   });
@@ -340,6 +367,10 @@
   }
   function openSuggestions() {
     const query = question.value.trim().toLowerCase();
+    if (!query || chatMessages.children.length) {
+      closeSuggestions();
+      return;
+    }
     visibleSuggestions = examples.filter(
       (item) => !query || item.toLowerCase().includes(query),
     );
@@ -396,6 +427,7 @@
     openSuggestions();
   });
   question.addEventListener("keydown", (event) => {
+    if (event.isComposing) return;
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
       closeSuggestions();
@@ -424,9 +456,14 @@
       paintActive();
       return;
     }
-    if (event.key === "Enter" && !suggestions.hidden && activeSuggestion >= 0) {
+    if (event.key === "Enter" && !event.shiftKey && !suggestions.hidden && activeSuggestion >= 0) {
       event.preventDefault();
       chooseSuggestion(activeSuggestion);
+      return;
+    }
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      $("#analysis-form").requestSubmit();
     }
   });
   document.addEventListener("pointerdown", (event) => {
@@ -1849,6 +1886,10 @@
     }
   }
   function showPage(page) {
+    if (shownPage === "ask") {
+      chatScrollTop = $("[data-chat-scroll]").scrollTop;
+      saveChat();
+    }
     const [raw, id] = String(page || "").split("/");
     const selected = [
       "ask",
@@ -1861,11 +1902,20 @@
     ].includes(raw)
       ? raw
       : "ask";
+    shownPage = selected;
     $("#ask").hidden = selected !== "ask";
-    $("[data-new-analysis]").hidden = selected === "ask";
+    if (selected === "ask") {
+      const position = chatScrollTop;
+      requestAnimationFrame(() => {
+        if (!$("#ask").hidden) $("[data-chat-scroll]").scrollTop = position;
+      });
+    }
+    $(".workspace").classList.toggle("chat-page", selected === "ask");
+    $("[data-new-analysis]").hidden =
+      selected === "ask" && !chatMessages.children.length;
     syncContext(selected);
     $("#run-details").hidden = selected !== "run-details" || !selectedRun;
-    $("#runs").hidden = selected !== "runs" && selected !== "ask";
+    $("#runs").hidden = selected !== "runs";
     $("#evaluations").hidden = selected !== "evaluations";
     $("#versions").hidden = selected !== "versions";
     $("#evolve").hidden = selected !== "evolve";
@@ -1913,8 +1963,8 @@
       $("#run-details").hidden = false;
       loading($("[data-run-message]"), "Loading run");
       set("[data-run-question]", "Loading run…");
-      set("[data-outcome]", "Loading");
-      $("[data-outcome]").className = "outcome-badge";
+      set("#run-details [data-outcome]", "Loading");
+      $("#run-details [data-outcome]").className = "outcome-badge";
       $(".run-facts").hidden = true;
       $(".run-columns").hidden = true;
       request("/api/runs/" + id)
@@ -2160,36 +2210,30 @@
       button.addEventListener("click", () => showTab(button.dataset.tab)),
     );
   window.addEventListener("hashchange", () => showPage(location.hash.slice(1)));
+  function runMessage(run) {
+    return (
+      run.message ||
+      (run.outcome === "unsupported"
+        ? run.limitation_reason ||
+          "The analyst cannot answer this question with its current capabilities."
+        : run.outcome === "answered" && run.answer != null
+          ? JSON.stringify(run.answer)
+          : run.error || "No answer was stored.")
+    );
+  }
   function renderRun(run) {
     selectedRun = run;
     closeSuggestions();
     $("#run-details").hidden = false;
     $(".run-columns").hidden = false;
     $(".run-facts").hidden = false;
-    const matched = datasets.find((item) => item.id === run.dataset?.id);
-    if (matched) {
-      $("#data-source").value =
-        (matched.input_kind === "logistics_bundle"
-          ? "logistics:"
-          : "inventory:") + matched.id;
-      setSource(matched, false);
-    }
     $("#run-details").className = "run-view " + (run.outcome || "");
     set("[data-run-question]", run.question || "Run " + run.run_id);
     set("[data-run-short-id]", run.run_id ? run.run_id.slice(0, 10) : "Run");
-    const badge = $("[data-outcome]");
+    const badge = $("#run-details [data-outcome]");
     badge.className = "outcome-badge " + run.outcome;
     badge.textContent = outcomeName(run.outcome);
-    set(
-      "[data-run-message]",
-      run.message ||
-        (run.outcome === "unsupported"
-          ? run.limitation_reason ||
-            "The analyst cannot answer this question with its current capabilities."
-          : run.outcome === "answered" && run.answer
-            ? JSON.stringify(run.answer)
-            : run.error || "No answer was stored."),
-    );
+    set("[data-run-message]", runMessage(run));
     loaded($("[data-run-message]"));
     set("[data-run-id]", run.run_id ? run.run_id.slice(0, 8) : "—");
     $("[data-run-id]").title = run.run_id || "";
@@ -2368,52 +2412,178 @@
       set("[data-history-count]", "Unavailable");
     }
   }
+  function syncChatLayout() {
+    const hasMessages = Boolean(chatMessages.children.length);
+    $("#ask").classList.toggle("has-messages", hasMessages);
+    $(".ask-heading").hidden = hasMessages;
+    $("[data-examples]").hidden = hasMessages;
+    chatMessages.hidden = !hasMessages;
+  }
+  function chatNearBottom() {
+    const scroll = $("[data-chat-scroll]");
+    return scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 100;
+  }
+  function scrollChat() {
+    const scroll = $("[data-chat-scroll]");
+    scroll.scrollTo({ top: scroll.scrollHeight, behavior: "instant" });
+  }
+  function renderChatEntry(reply) {
+    const { entry, message, status, content } = reply;
+    content.textContent = entry.text;
+    status.textContent = entry.status || "";
+    if (entry.outcome) message.dataset.chatOutcome = entry.outcome;
+    if (entry.error) message.dataset.state = "error";
+    if (entry.pending) message.setAttribute("aria-busy", "true");
+    else message.removeAttribute("aria-busy");
+    message.querySelector(".case-links")?.remove();
+    if (entry.runId) {
+      const links = el("div", "case-links"),
+        runLink = el("a", "text-button", "View run ↗");
+      runLink.href = "#run-details/" + encodeURIComponent(entry.runId);
+      links.append(runLink);
+      if (entry.evolutionId) {
+        const evolutionLink = el("a", "text-button", "View evolution ↗");
+        evolutionLink.href = "#evolve/" + encodeURIComponent(entry.evolutionId);
+        links.append(evolutionLink);
+      }
+      message.append(links);
+    }
+  }
+  function appendChatMessage(role, text, source, details = {}) {
+    const entry = {
+      role, text,
+      source: source ? { id: source.id, input_kind: source.input_kind } : null,
+      ...details,
+    };
+    const message = el("article", "chat-message"),
+      heading = el("div", "sr-only"),
+      status = el("div", "chat-status"),
+      content = el("p", "", text);
+    message.dataset.chatRole = role;
+    message.setAttribute("aria-atomic", "true");
+    heading.append(el("strong", "", role === "user" ? "You" : "Analyst"));
+    if (source)
+      heading.append(
+        el(
+          "span",
+          "",
+          (source.input_kind === "logistics_bundle" ? "Logistics" : "Inventory") +
+            " · " + source.id,
+        ),
+      );
+    message.append(heading, status, content);
+    const reply = { entry, message, status, content };
+    renderChatEntry(reply);
+    chatEntries.push(entry);
+    chatMessages.append(message);
+    syncChatLayout();
+    $("[data-new-analysis]").hidden = false;
+    return reply;
+  }
+  function restoreChat() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY));
+      const validSource = (source) => source === null || (
+        source && typeof source.id === "string" &&
+        ["inventory_table", "logistics_bundle"].includes(source.input_kind)
+      );
+      if (saved?.version !== 1 || !Array.isArray(saved.messages) ||
+          typeof saved.draft !== "string" || saved.draft.length > 2000 ||
+          !validSource(saved.source) || !saved.messages.every((entry) =>
+            entry && ["user", "assistant"].includes(entry.role) &&
+            typeof entry.text === "string" && validSource(entry.source) &&
+            ["status", "outcome", "runId", "evolutionId"].every((key) =>
+              entry[key] == null || typeof entry[key] === "string") &&
+            ["pending", "error"].every((key) =>
+              entry[key] === undefined || typeof entry[key] === "boolean"))) return;
+      question.value = saved.draft;
+      chatSource = saved.source;
+      chatScrollTop = Number.isFinite(saved.scrollTop) ? Math.max(0, saved.scrollTop) : 0;
+      for (const entry of saved.messages) {
+        const { role, source, status, outcome, runId, evolutionId, error, pending } = entry;
+        appendChatMessage(role, pending
+          ? "This request was interrupted by a page reload. Check Runs for a completed result before sending it again."
+          : entry.text, source, {
+          status: pending ? "Request interrupted" : status,
+          outcome, runId, evolutionId,
+          error: pending || error,
+          pending: false,
+        });
+      }
+      saveDraft();
+    } catch {}
+  }
   $("#analysis-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     closeSuggestions();
     if (runButton.disabled) return;
+    const prompt = question.value.trim(),
+      source = selectedSource;
+    if (!prompt) {
+      question.setCustomValidity("Enter a question for the analyst.");
+      question.reportValidity();
+      return;
+    }
+    appendChatMessage("user", prompt, source);
+    const reply = appendChatMessage("assistant", "Running analysis…", null, { pending: true });
+    question.value = "";
     saveDraft();
+    autosize();
     submitting = true;
-    $("[data-analysis-error]").hidden = true;
     const original = runButton.innerHTML;
-    runButton.disabled = true;
+    updateRunButton();
     runButton.setAttribute("aria-busy", "true");
-    runButton.textContent = "Running analysis…";
+    runButton.innerHTML = '<span class="send-progress" aria-hidden="true"></span>';
+    runButton.setAttribute("aria-label", "Analysis in progress");
     announce("Analysis in progress");
+    question.focus({ preventScroll: true });
+    closeSuggestions();
+    scrollChat();
     try {
       const run = await request("/api/runs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          question: question.value,
-          input_kind: selectedSource.input_kind,
-          dataset_id: selectedSource.id,
+          question: prompt,
+          input_kind: source.input_kind,
+          dataset_id: source.id,
         }),
       });
-      const full = await request(
-        "/api/runs/" + encodeURIComponent(run.run_id),
-      ).catch(() => run);
-      renderRun(full);
+      const followReply = chatNearBottom();
+      reply.entry.text = runMessage(run);
+      reply.entry.outcome = run.outcome;
+      reply.entry.pending = false;
+      const seconds = run.resources?.elapsed_seconds;
+      reply.entry.status = seconds == null
+        ? outcomeName(run.outcome)
+        : outcomeName(run.outcome) + " · " + seconds + " s";
+      reply.entry.runId = run.run_id;
+      reply.entry.evolutionId = run.evolution_job_id;
+      renderChatEntry(reply);
+      if (followReply) scrollChat();
+      announce("Analyst replied");
       loadHistory();
-      const evolutionId = run.evolution_job_id || full.evolution_job_id;
-      const destination = evolutionId
-        ? "evolve/" + evolutionId
-        : "run-details/" + encodeURIComponent(full.run_id);
-      if (location.hash === "#" + destination) showPage(destination);
-      else location.hash = destination;
     } catch (error) {
-      stateMessage(
-        $("[data-analysis-error]"),
-        "Analysis could not complete",
-        error.message,
-        null,
-      );
-      announce(error.message);
+      const followReply = chatNearBottom();
+      reply.entry.error = true;
+      reply.entry.pending = false;
+      reply.entry.status = "Analysis failed";
+      reply.entry.text = "Analysis could not complete. " + error.message;
+      renderChatEntry(reply);
+      announce("Analysis could not complete");
+      if (!question.value) {
+        question.value = prompt;
+        saveDraft();
+        autosize();
+      }
+      if (followReply) scrollChat();
     } finally {
+      saveChat();
       submitting = false;
       updateRunButton();
       runButton.removeAttribute("aria-busy");
       runButton.innerHTML = original;
+      runButton.setAttribute("aria-label", "Send question");
     }
   });
   $("[data-copy-run-id]").addEventListener("click", async () => {
@@ -2476,7 +2646,17 @@
     loadWorkflowComparison,
   );
   $("[data-new-analysis]").addEventListener("click", () => {
+    if (submitting) return;
+    chatMessages.replaceChildren();
+    chatEntries.length = 0;
+    chatScrollTop = 0;
+    syncChatLayout();
+    question.value = "";
+    question.setCustomValidity("");
+    saveDraft();
+    autosize();
     location.hash = "#ask";
+    $("[data-new-analysis]").hidden = true;
     setTimeout(() => question.focus(), 0);
   });
   $("[data-run-search]").addEventListener("input", () => {
@@ -2550,6 +2730,14 @@
       buttons[index].focus();
     }),
   );
+  $("[data-chat-scroll]").addEventListener("scroll", () => {
+    if ($("#ask").hidden) return;
+    chatScrollTop = $("[data-chat-scroll]").scrollTop;
+    clearTimeout(chatSaveTimer);
+    chatSaveTimer = setTimeout(saveChat, 150);
+  });
+  window.addEventListener("pagehide", saveChat);
+  restoreChat();
   loadHealth();
   loadDatasets().then(() => {
     if (location.hash === "#versions") loadVersions();

@@ -60,13 +60,28 @@
         </header>
         <main>
           <section class="ask" id="ask" aria-label="Ask the analyst">
-            <div class="page-heading ask-heading">
-              <div>
-                <h1 data-ask-title>Ask your inventory</h1>
-                <p class="muted">
-                  Run an analysis and inspect the evidence behind the answer.
-                </p>
+            <div class="chat-scroll" data-chat-scroll>
+              <div class="page-heading ask-heading">
+                <div>
+                  <h1 data-ask-title>Ask your inventory</h1>
+                  <p class="muted">
+                    Ask a question about your data.
+                  </p>
+                </div>
               </div>
+              <div
+                data-chat-messages
+                role="log"
+                aria-label="Conversation with the analyst"
+                aria-live="polite"
+                aria-relevant="additions text"
+                hidden
+              ></div>
+              <div
+                class="example-questions"
+                aria-label="Example questions"
+                data-examples
+              ></div>
             </div>
             <form id="analysis-form" autocomplete="off">
               <label class="sr-only" for="question"
@@ -76,7 +91,7 @@
                 <textarea
                   id="question"
                   name="question"
-                  rows="3"
+                  rows="1"
                   required
                   maxlength="2000"
                   aria-autocomplete="list"
@@ -95,9 +110,12 @@
                     class="primary-button"
                     type="submit"
                     data-run-button
+                    aria-label="Send question"
                     disabled
                   >
-                    Run analysis <span aria-hidden="true">→</span>
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                      <path d="M12 19V5m-6 6 6-6 6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+                    </svg>
                   </button>
                 </div>
               </div>
@@ -110,7 +128,7 @@
               ></div>
               <div class="composer-help" id="composer-help">
                 <span data-source-note>Checking data source…</span
-                ><span>⌘ / Ctrl + Enter to run</span>
+                ><span>Enter to send · Shift + Enter for a new line</span>
               </div>
               <button
                 class="secondary-button"
@@ -120,13 +138,7 @@
               >
                 Load demo data
               </button>
-              <div data-analysis-error hidden></div>
             </form>
-            <div
-              class="example-questions"
-              aria-label="Example questions"
-              data-examples
-            ></div>
           </section>
           <section
             class="run-view"

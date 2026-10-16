@@ -144,6 +144,7 @@ def test_local_ui_runs_the_phase_three_executor_and_exposes_compact_evidence(loc
     assert status == 201
     assert run["outcome"] == "answered"
     assert run["answer"] == {"value": 18}
+    assert run["message"] == "There are 18 available units in the East warehouse."
     assert run["dataset"] == {"id": "small", "row_count": 6, "input_kind": "inventory_table", "domain": "inventory", "relations": None}
     assert run["resources"]["table_pages"] == 1
     assert run["history"]["status"] == "recorded"
@@ -199,6 +200,7 @@ def test_logistics_ui_loads_public_bundle_and_records_reviewed_tool_call():
         "question": "How many customers sent more than 15 shipments from warehouse 3 yesterday?"})
     assert run["outcome"] == "answered"
     assert run["answer"] == {"value": 2}
+    assert run["message"] == "2 customers sent more than 15 shipments from warehouse 3 yesterday."
     assert run["capability_request"]["kind"] == "shipment_customer_threshold"
     assert run["resources"]["model_calls"] == 0
     assert run["resources"]["tool_calls"] == 1
