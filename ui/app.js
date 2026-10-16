@@ -34,7 +34,8 @@
     submitting = false,
     routeSequence = 0,
     evolutionSequence = 0,
-    harnessSequence = 0;
+    harnessSequence = 0,
+    previewSequence = 0;
   const PAGE_SIZE = 10;
   let evaluationPage = 0,
     versionPage = 0,
@@ -195,8 +196,82 @@
           ? "Load a data source before running an analysis"
           : "Run analysis (Cmd/Ctrl + Enter)";
   }
+  function renderDatabasePreview(data) {
+    const relations = $("[data-database-relations]"),
+      content = $("[data-database-content]");
+    relations.replaceChildren();
+    Object.entries(data.relations || {}).forEach(([name, count]) => {
+      const button = el("button", "", `${name} · ${count}`);
+      button.type = "button";
+      button.setAttribute("aria-selected", String(name === data.relation));
+      button.addEventListener("click", () => {
+        if (name !== data.relation) loadDatabasePreview(name);
+      });
+      relations.append(button);
+    });
+    content.replaceChildren();
+    if (!data.rows?.length) {
+      content.append(el("p", "database-empty", "This table has no rows."));
+      return;
+    }
+    const scroll = el("div", "database-scroll"),
+      table = el("table", "database-table"),
+      head = el("thead"),
+      header = el("tr"),
+      body = el("tbody");
+    data.columns.forEach((column) => {
+      const cell = el("th", "", column);
+      cell.scope = "col";
+      header.append(cell);
+    });
+    head.append(header);
+    data.rows.forEach((row) => {
+      const line = el("tr");
+      data.columns.forEach((column) =>
+        line.append(el("td", "", row[column] ?? "—")),
+      );
+      body.append(line);
+    });
+    table.append(head, body);
+    scroll.append(table);
+    content.append(
+      scroll,
+      el("div", "database-footer", `Showing ${data.rows.length} of ${data.row_count} rows · SQLite snapshot`),
+    );
+  }
+  async function loadDatabasePreview(relation = "") {
+    const sequence = ++previewSequence,
+      source = selectedSource,
+      content = $("[data-database-content]");
+    if (!source?.id) {
+      $("[data-database-relations]").replaceChildren();
+      content.replaceChildren(
+        el("p", "database-empty", "Load a data source to see its tables."),
+      );
+      return;
+    }
+    loading(content, "Loading database preview");
+    const params = new URLSearchParams({
+      dataset_id: source.id,
+      input_kind: source.input_kind,
+    });
+    if (relation) params.set("relation", relation);
+    try {
+      const data = await request("/api/datasets/preview?" + params);
+      if (sequence !== previewSequence) return;
+      loaded(content);
+      renderDatabasePreview(data);
+    } catch (error) {
+      if (sequence !== previewSequence) return;
+      stateMessage(content, "Preview unavailable", error.message, () =>
+        loadDatabasePreview(relation),
+      );
+    }
+  }
   function setSource(source, clearQuestion = false) {
     selectedSource = source;
+    set("[data-database-source]", source?.id || "No data source selected");
+    loadDatabasePreview();
     const logistics = source && source.input_kind === "logistics_bundle";
     examples = logistics ? logisticsExamples : inventoryExamples;
     syncContext(location.hash.slice(1).split("/")[0] || "ask");
@@ -1865,24 +1940,11 @@
     $("[data-new-analysis]").hidden = selected === "ask";
     syncContext(selected);
     $("#run-details").hidden = selected !== "run-details" || !selectedRun;
-    $("#runs").hidden = selected !== "runs" && selected !== "ask";
+    $("#runs").hidden = selected !== "runs";
     $("#evaluations").hidden = selected !== "evaluations";
     $("#versions").hidden = selected !== "versions";
     $("#evolve").hidden = selected !== "evolve";
     $("#harness").hidden = selected !== "harness";
-    $("#runs").classList.toggle("standalone", selected === "runs");
-    const heading = $("[data-runs-heading]"),
-      tag = selected === "runs" ? "H1" : "H2";
-    if (heading.tagName !== tag) {
-      const replacement = el(
-        tag.toLowerCase(),
-        "",
-        selected === "runs" ? "Runs" : "Recent runs",
-      );
-      replacement.id = "recent-heading";
-      replacement.dataset.runsHeading = "";
-      heading.replaceWith(replacement);
-    } else heading.textContent = selected === "runs" ? "Runs" : "Recent runs";
     $("[data-workflow-diff]").hidden =
       selected !== "harness" || !$("[data-compare-revision]").value;
     document.querySelectorAll("[data-nav]").forEach((link) => {

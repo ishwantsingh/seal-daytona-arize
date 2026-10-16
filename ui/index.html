@@ -60,6 +60,8 @@
         </header>
         <main>
           <section class="ask" id="ask" aria-label="Ask the analyst">
+            <div class="ask-layout">
+              <div class="ask-main">
             <div class="page-heading ask-heading">
               <div>
                 <h1 data-ask-title>Ask your inventory</h1>
@@ -127,6 +129,20 @@
               aria-label="Example questions"
               data-examples
             ></div>
+              </div>
+              <aside class="database-panel" aria-labelledby="database-heading">
+                <div class="database-heading">
+                  <div>
+                    <span class="database-eyebrow">LOCAL SQLITE</span>
+                    <h2 id="database-heading">Database preview</h2>
+                  </div>
+                  <span class="database-live"><span class="status-dot"></span> Read only</span>
+                </div>
+                <p class="database-source" data-database-source>Choose a data source</p>
+                <div class="database-relations" data-database-relations aria-label="Database tables"></div>
+                <div class="database-content" data-database-content role="status">Loading data…</div>
+              </aside>
+            </div>
           </section>
           <section
             class="run-view"
@@ -276,10 +292,10 @@
               </aside>
             </div>
           </section>
-          <section class="recent" id="runs" aria-labelledby="recent-heading">
+          <section class="recent standalone" id="runs" aria-labelledby="recent-heading" hidden>
             <div class="page-heading">
               <div>
-                <h2 id="recent-heading" data-runs-heading>Recent runs</h2>
+                <h1 id="recent-heading">Runs</h1>
                 <p class="muted">Recorded analyses and their outcomes.</p>
               </div>
               <span class="muted" data-history-count></span>

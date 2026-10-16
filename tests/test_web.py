@@ -122,6 +122,13 @@ def test_local_ui_serves_assets_and_only_dataset_metadata(local_server):
                                      "input_kind": "inventory_table", "domain": "inventory"}]
     assert "A-100" not in repr(datasets)
 
+    status, preview = request_json(local_server, "/api/datasets/preview?dataset_id=small&input_kind=inventory_table")
+    assert status == 200
+    assert preview["relation"] == "analyst_rows"
+    assert preview["row_count"] == 6
+    assert preview["rows"][0]["sku"] == "A-100"
+    assert preview["columns"] == ["sku", "warehouse", "category", "on_hand", "reserved"]
+
     with pytest.raises(HTTPError) as error:
         urlopen(local_server + "/%2e%2e/pyproject.toml", timeout=2)  # noqa: S310 -- loopback test server
     assert error.value.code == 404
@@ -195,6 +202,13 @@ def test_logistics_ui_loads_public_bundle_and_records_reviewed_tool_call():
     assert seeded["relations"] == {"customers": 8, "warehouses": 3, "shipments": 74}
     _, sources = app.api("GET", "/api/datasets")
     assert any(item["input_kind"] == "logistics_bundle" for item in sources["datasets"])
+    _, preview = app.api("GET", f"/api/datasets/preview?dataset_id={seeded['id']}&input_kind=logistics_bundle")
+    assert preview["relation"] == "shipments"
+    assert preview["row_count"] == 74
+    assert len(preview["rows"]) == 20
+    _, customers = app.api("GET", f"/api/datasets/preview?dataset_id={seeded['id']}&input_kind=logistics_bundle&relation=customers")
+    assert customers["row_count"] == 8
+    assert customers["columns"] == ["customer_id", "segment", "status"]
     _, run = app.api("POST", "/api/runs", {"input_kind": "logistics_bundle", "dataset_id": seeded["id"],
         "question": "How many customers sent more than 15 shipments from warehouse 3 yesterday?"})
     assert run["outcome"] == "answered"
@@ -357,6 +371,8 @@ def test_evaluation_and_version_pages_use_stored_records_without_exposing_final_
     app = make_application(supported_model, dataset_ids=("small", "final-secret"))
     _, datasets = app.api("GET", "/api/datasets")
     assert [item["id"] for item in datasets["datasets"]] == ["small"]
+    with pytest.raises(WebRequestError, match="unavailable"):
+        app.api("GET", "/api/datasets/preview?dataset_id=final-secret&input_kind=inventory_table")
     with pytest.raises(WebRequestError, match="Protected evaluation"):
         app.api("POST", "/api/runs", {"dataset_id": "final-secret", "question": "What is available?"})
     app.history.final_assessments.insert_one({"_id": "final-1", "case_id": "final-1",

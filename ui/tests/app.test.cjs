@@ -79,7 +79,48 @@ test("navigation isolates pages and retains the draft when inspecting a linked r
   d.querySelector("[data-new-analysis]").click();
   await tick();
   assert.equal(d.querySelector("#ask").hidden, false);
+  assert.equal(d.querySelector("#runs").hidden, true);
   assert.equal(d.querySelector("#question").value, "My unfinished\nquestion");
+});
+test("Ask shows the selected SQLite snapshot and switches logistics tables", async (t) => {
+  const { w, d, calls } = await setup(t, {
+    "/api/datasets": {
+      datasets: [
+        { id: "inventory", input_kind: "inventory_table" },
+        { id: "logistics", input_kind: "logistics_bundle" },
+      ],
+    },
+    "/api/datasets/preview": (url) => {
+      const params = new URL(url, "http://localhost").searchParams;
+      if (params.get("input_kind") === "inventory_table")
+        return {
+          relation: "analyst_rows",
+          relations: { analyst_rows: 1 },
+          columns: ["sku", "on_hand"],
+          row_count: 1,
+          rows: [{ sku: "A-100", on_hand: 10 }],
+        };
+      const customers = params.get("relation") === "customers";
+      return {
+        relation: customers ? "customers" : "shipments",
+        relations: { customers: 1, shipments: 1 },
+        columns: customers ? ["customer_id"] : ["shipment_id"],
+        row_count: 1,
+        rows: [customers ? { customer_id: "C-1" } : { shipment_id: "S-1" }],
+      };
+    },
+  });
+  assert.match(d.querySelector("[data-database-content]").textContent, /S-1/);
+  d.querySelector("[data-database-relations] button").click();
+  await tick();
+  assert.match(d.querySelector("[data-database-content]").textContent, /C-1/);
+  const picker = d.querySelector("#data-source");
+  picker.value = "inventory:inventory";
+  picker.dispatchEvent(new w.Event("change"));
+  await tick();
+  assert.match(d.querySelector("[data-database-content]").textContent, /A-100/);
+  assert.equal(d.querySelector("[data-database-source]").textContent, "inventory");
+  assert.equal(calls.filter(([url]) => url.startsWith("/api/datasets/preview?")).length, 3);
 });
 test("disconnected service has an honest status, disabled analysis, and retryable history", async (t) => {
   const { d } = await setup(t, {
