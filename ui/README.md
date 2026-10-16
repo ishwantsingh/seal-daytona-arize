@@ -1,6 +1,9 @@
 # SEAL operator console
 
 Start with `uv run seal ui` from the repo root and open http://127.0.0.1:4173.
+Restart the server after pulling or merging Python API changes. Static UI files
+update immediately, while the running Python process retains its loaded routes;
+an old process can show the new viewer but lack its preview endpoint.
 The console uses the same trusted execution, SQLite history, Phoenix telemetry,
 and Daytona runner as the CLI. Pages expose requests, measured data reads,
 model/tool activity, candidate changes, evaluation results, versions, and lineage.

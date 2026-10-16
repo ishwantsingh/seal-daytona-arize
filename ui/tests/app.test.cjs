@@ -55,6 +55,7 @@ async function setup(t, overrides = {}, hash = "", draft = "", savedChat, before
       typeof value === "function" ? await value(url, options) : value;
     return {
       ok: body !== undefined,
+      status: body === undefined ? 404 : 200,
       json: async () => body || { error: "Missing record" },
     };
   };
@@ -153,6 +154,21 @@ test("chat answers and the database viewer coexist through run navigation and re
   assertCombinedPage(d);
   const restored = await setup(t, overrides, "#ask", "", w.localStorage.getItem("selfHealChat"));
   assertCombinedPage(restored.d);
+});
+test("an old server's missing preview route explains the restart and Retry recovers", async (t) => {
+  let updated = false;
+  const { d } = await setup(t, {
+    "/api/datasets/preview": () => updated ? {
+      relation: "analyst_rows", relations: { analyst_rows: 1 }, columns: ["sku"],
+      row_count: 1, rows: [{ sku: "A-100" }],
+    } : undefined,
+  });
+  assert.match(d.querySelector("[data-database-content]").textContent, /Restart seal ui/);
+  updated = true;
+  d.querySelector("[data-database-content] button").click();
+  await tick();
+  assert.match(d.querySelector("[data-database-content]").textContent, /A-100/);
+  assert.equal(d.querySelector("[data-database-content] .state-message"), null);
 });
 test("disconnected service has an honest status, disabled analysis, and retryable history", async (t) => {
   const { d } = await setup(t, {

@@ -178,7 +178,11 @@
         signal: controller.signal,
       });
       const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(body.error || "Request failed");
+      if (!response.ok) {
+        const error = new Error(body.error || "Request failed");
+        error.status = response.status;
+        throw error;
+      }
       return body;
     } catch (error) {
       if (error.name === "AbortError")
@@ -285,7 +289,10 @@
       renderDatabasePreview(data);
     } catch (error) {
       if (sequence !== previewSequence) return;
-      stateMessage(content, "Preview unavailable", error.message, () =>
+      const message = error.status === 404
+        ? "The running server needs an update. Restart seal ui from this repository, then retry."
+        : error.message;
+      stateMessage(content, "Preview unavailable", message, () =>
         loadDatabasePreview(relation),
       );
     }
