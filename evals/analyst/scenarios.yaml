@@ -1,0 +1,57 @@
+version: 1
+scenarios:
+  - scenario_id: small-east-available
+    dataset_id: small-inventory-v1
+    description: Existing six-row smoke dataset and hand-checkable available inventory total.
+    task:
+      metric: available
+      filter_field: warehouse
+      filter_value: East
+    question: How many available units are in the East warehouse?
+    baseline_expectation: pass
+    fixture: data/small_inventory.json
+
+  - scenario_id: edge-empty-sku
+    dataset_id: eval-edge-empty-sku-v1
+    description: A valid exact filter with no matching rows must return zero.
+    task:
+      metric: reserved
+      filter_field: sku
+      filter_value: SKU-99999
+    question: How many reserved units are there for SKU-99999?
+    baseline_expectation: pass
+    generation:
+      seed: 117
+      row_count: 11
+      warehouses: [East, West]
+      categories: [Hardware, Office]
+      on_hand: [1, 20]
+
+  - scenario_id: bulk-warehouse-available
+    dataset_id: eval-bulk-warehouse-available-v1
+    description: A 512-row grouped total that needs a reusable bulk mechanism.
+    task:
+      metric: available
+      group_by: warehouse
+    question: What are the available units in each warehouse?
+    baseline_expectation: fails_model_call_budget
+    generation:
+      seed: 20260926
+      row_count: 512
+      warehouses: [East, North, South, West]
+      categories: [Hardware, Office, Safety]
+      on_hand: [1, 100]
+
+  - scenario_id: invalid-reserved-over-on-hand
+    dataset_id: eval-invalid-reserved-over-on-hand-v1
+    description: Dataset validation rejects rows whose reserved value exceeds on_hand.
+    task:
+      metric: on_hand
+    baseline_expectation: rejected_dataset
+    generation:
+      seed: 9
+      row_count: 4
+      warehouses: [East]
+      categories: [Hardware]
+      on_hand: [1, 5]
+      invalid_row: reserved_exceeds_on_hand

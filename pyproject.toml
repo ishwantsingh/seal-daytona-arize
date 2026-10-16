@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "seal-agent-harness"
+version = "0.1.0"
+description = "An evidence-gated self-improving agent harness with Daytona and Arize Phoenix"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "openai>=2,<3",
+    "python-dotenv>=1,<2",
+    "PyYAML>=6,<7",
+    "daytona>=0.224,<0.225",
+    "arize-phoenix-client>=3.5,<4",
+    "arize-phoenix-otel>=0.13,<1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.14"]
+phoenix = ["arize-phoenix>=13.9"]
+
+[project.scripts]
+seal = "self_heal.cli:main"
+self-heal = "self_heal.cli:main"
+
+[tool.setuptools]
+packages = ["self_heal", "harness", "evals", "evals.analyst", "evals.analyst.data", "evals.logistics"]
+
+[tool.setuptools.package-dir]
+self_heal = "src/self_heal"
+harness = "harness"
+
+[tool.setuptools.package-data]
+"evals.analyst" = ["scenarios.yaml", "data/*.json"]
+
+[tool.setuptools.data-files]
+"share/self-heal/ui" = ["ui/index.html", "ui/app.js", "ui/styles.css", "ui/README.md"]
+"share/self-heal/ui/fonts" = ["ui/fonts/Geist.woff2", "ui/fonts/GeistMono.woff2", "ui/fonts/LICENSE.txt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

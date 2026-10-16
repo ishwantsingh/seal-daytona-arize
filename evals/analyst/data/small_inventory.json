@@ -1,0 +1,12 @@
+{
+  "dataset_id": "small-inventory-v1",
+  "description": "Phase 1 inventory smoke table",
+  "rows": [
+    {"sku": "A-100", "warehouse": "East", "category": "Hardware", "on_hand": 10, "reserved": 2},
+    {"sku": "B-200", "warehouse": "West", "category": "Hardware", "on_hand": 7, "reserved": 1},
+    {"sku": "C-300", "warehouse": "East", "category": "Office", "on_hand": 8, "reserved": 3},
+    {"sku": "D-400", "warehouse": "East", "category": "Office", "on_hand": 6, "reserved": 1},
+    {"sku": "E-500", "warehouse": "West", "category": "Office", "on_hand": 12, "reserved": 4},
+    {"sku": "F-600", "warehouse": "North", "category": "Hardware", "on_hand": 5, "reserved": 0}
+  ]
+}

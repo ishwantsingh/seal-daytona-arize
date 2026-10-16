@@ -1,0 +1,681 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta
+      name="description"
+      content="SEAL inventory analyst and run evidence"
+    />
+    <title>SEAL</title>
+    <link rel="stylesheet" href="./styles.css?v=4fdf7b6370" />
+  </head>
+  <body>
+    <div class="shell">
+      <div class="workspace">
+        <header class="app-header">
+          <div class="topbar">
+            <div class="workspace-context">
+              <a class="brand" href="#ask" aria-label="SEAL home"
+                ><span class="brand-mark" aria-hidden="true"
+                  ><i></i><i></i><i></i><i></i></span
+                ><span>SEAL</span></a
+              ><span class="context-slash" aria-hidden="true">/</span
+              ><span class="workspace-title">Local workspace</span
+              ><span class="local-badge">Local</span>
+            </div>
+            <div class="header-actions">
+              <span class="active-version"
+                >Active <strong data-active-version>Checking…</strong></span
+              ><span class="connection" data-connection data-state="loading"
+                ><span class="status-dot"></span
+                ><span data-sqlite-status>Checking SQLite</span></span
+              ><button
+                class="secondary-button"
+                type="button"
+                data-retry-connection
+                hidden
+                aria-label="Retry connection"
+              >
+                Retry</button
+              ><button class="primary-button" type="button" data-new-analysis>
+                New analysis <span aria-hidden="true">+</span>
+              </button>
+            </div>
+          </div>
+          <div class="navigation-bar">
+            <nav aria-label="Main">
+              <a href="#ask" class="nav-link" data-nav="ask">Ask</a
+              ><a href="#runs" class="nav-link" data-nav="runs">Runs</a
+              ><a href="#evolve" class="nav-link" data-nav="evolve">Evolve</a
+              ><a href="#harness" class="nav-link" data-nav="harness">Harness</a
+              ><a href="#evaluations" class="nav-link" data-nav="evaluations"
+                >Evaluations</a
+              ><a href="#versions" class="nav-link" data-nav="versions"
+                >Versions</a
+              >
+            </nav>
+            <span class="nav-context" data-workspace-title>Analyst</span>
+          </div>
+        </header>
+        <main>
+          <section class="ask" id="ask" aria-label="Ask the analyst">
+            <div class="page-heading ask-heading">
+              <div>
+                <h1 data-ask-title>Ask your inventory</h1>
+                <p class="muted">
+                  Run an analysis and inspect the evidence behind the answer.
+                </p>
+              </div>
+            </div>
+            <form id="analysis-form" autocomplete="off">
+              <label class="sr-only" for="question"
+                >Question for the analyst</label
+              >
+              <div class="composer">
+                <textarea
+                  id="question"
+                  name="question"
+                  rows="3"
+                  required
+                  maxlength="2000"
+                  aria-autocomplete="list"
+                  aria-controls="suggestions"
+                  aria-describedby="composer-help"
+                  placeholder="Ask about your data…"
+                ></textarea>
+                <div class="composer-footer">
+                  <div class="source-picker">
+                    <label for="data-source">Source</label
+                    ><select id="data-source" aria-label="Data source">
+                      <option>Loading sources…</option>
+                    </select>
+                  </div>
+                  <button
+                    class="primary-button"
+                    type="submit"
+                    data-run-button
+                    disabled
+                  >
+                    Run analysis <span aria-hidden="true">→</span>
+                  </button>
+                </div>
+              </div>
+              <div
+                class="suggestions"
+                id="suggestions"
+                role="listbox"
+                aria-label="Suggested questions"
+                hidden
+              ></div>
+              <div class="composer-help" id="composer-help">
+                <span data-source-note>Checking data source…</span
+                ><span>⌘ / Ctrl + Enter to run</span>
+              </div>
+              <button
+                class="secondary-button"
+                type="button"
+                data-load-logistics
+                hidden
+              >
+                Load demo data
+              </button>
+              <div data-analysis-error hidden></div>
+            </form>
+            <div
+              class="example-questions"
+              aria-label="Example questions"
+              data-examples
+            ></div>
+          </section>
+          <section
+            class="run-view"
+            id="run-details"
+            aria-labelledby="run-heading"
+            hidden
+          >
+            <div class="breadcrumb">
+              <a href="#runs">Runs</a><span>/</span
+              ><span data-run-short-id></span>
+            </div>
+            <div class="run-title-line">
+              <h1 id="run-heading" data-run-question></h1>
+              <span class="outcome-badge" data-outcome></span>
+            </div>
+            <div class="answer" data-run-message></div>
+            <div class="run-facts">
+              <span
+                >Run ID <strong data-run-id></strong
+                ><button type="button" class="text-button" data-copy-run-id>
+                  Copy
+                </button></span
+              ><span>Version <strong data-version></strong></span
+              ><span>Duration <strong data-duration></strong></span
+              ><span>Started <strong data-run-started></strong></span
+              ><span data-resource-summary></span>
+            </div>
+            <div class="run-columns">
+              <div class="run-primary">
+                <div
+                  class="evidence-tabs"
+                  role="tablist"
+                  aria-label="Run evidence"
+                >
+                  <button
+                    type="button"
+                    role="tab"
+                    id="tab-sqlite"
+                    aria-controls="panel-sqlite"
+                    data-tab="sqlite"
+                  >
+                    Data</button
+                  ><button
+                    type="button"
+                    role="tab"
+                    id="tab-tools"
+                    aria-controls="panel-tools"
+                    data-tab="tools"
+                  >
+                    Tool calls</button
+                  ><button
+                    type="button"
+                    role="tab"
+                    id="tab-trace"
+                    aria-controls="panel-trace"
+                    data-tab="trace"
+                  >
+                    Trace
+                  </button>
+                </div>
+                <div class="evidence-grid">
+                  <section
+                    class="evidence-section"
+                    role="tabpanel"
+                    id="panel-sqlite"
+                    aria-labelledby="tab-sqlite"
+                    data-panel="sqlite"
+                    aria-labelledby="sqlite-heading"
+                  >
+                    <div class="section-heading">
+                      <h2 id="sqlite-heading">SQLite data read</h2>
+                      <span data-sqlite-summary></span>
+                    </div>
+                    <div data-sqlite-content></div>
+                  </section>
+                  <section
+                    class="evidence-section"
+                    role="tabpanel"
+                    id="panel-tools"
+                    aria-labelledby="tab-tools"
+                    data-panel="tools"
+                    aria-labelledby="tools-heading"
+                    hidden
+                  >
+                    <div class="section-heading">
+                      <h2 id="tools-heading">Tool calls</h2>
+                      <span data-tools-summary></span>
+                    </div>
+                    <div data-tool-content></div>
+                  </section>
+                  <section
+                    class="evidence-section"
+                    role="tabpanel"
+                    id="panel-trace"
+                    aria-labelledby="tab-trace"
+                    data-panel="trace"
+                    aria-labelledby="trace-heading"
+                    hidden
+                  >
+                    <div class="section-heading">
+                      <h2 id="trace-heading">Arize Phoenix trace</h2>
+                      <a
+                        data-trace-link
+                        hidden
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        >Open full trace ↗</a
+                      >
+                    </div>
+                    <div data-trace-content></div>
+                  </section>
+                  <section
+                    class="evidence-section"
+                    id="candidate-check"
+                    aria-labelledby="evaluation-heading"
+                    hidden
+                  >
+                    <div class="section-heading">
+                      <h2 id="evaluation-heading">
+                        Capability gap &amp; candidate check
+                      </h2>
+                    </div>
+                    <div data-gap-content></div>
+                  </section>
+                </div>
+              </div>
+              <aside class="run-secondary">
+                <section
+                  class="evidence-section"
+                  aria-labelledby="timeline-heading"
+                >
+                  <div class="section-heading">
+                    <h2 id="timeline-heading">Execution timeline</h2>
+                    <span data-timeline-total></span>
+                  </div>
+                  <div data-timeline-content></div>
+                </section>
+                <section
+                  class="evidence-section"
+                  aria-labelledby="related-heading"
+                >
+                  <div class="section-heading">
+                    <h2 id="related-heading">Related evolution</h2>
+                  </div>
+                  <div data-related-evolution></div>
+                </section>
+              </aside>
+            </div>
+          </section>
+          <section class="recent" id="runs" aria-labelledby="recent-heading">
+            <div class="page-heading">
+              <div>
+                <h2 id="recent-heading" data-runs-heading>Recent runs</h2>
+                <p class="muted">Recorded analyses and their outcomes.</p>
+              </div>
+              <span class="muted" data-history-count></span>
+            </div>
+            <div class="table-toolbar">
+              <label class="search-field"
+                >Search
+                <input
+                  type="search"
+                  data-run-search
+                  placeholder="Search questions or run IDs" /></label
+              ><label
+                >Outcome
+                <select data-run-filter>
+                  <option value="">All outcomes</option>
+                  <option value="answered">Answered</option>
+                  <option value="unsupported">Capability gaps</option>
+                  <option value="error">Errors</option>
+                </select></label
+              ><button class="secondary-button" type="button" data-refresh-runs>
+                Refresh
+              </button>
+            </div>
+            <div class="table-wrap history-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th scope="col">Question</th>
+                    <th scope="col">Outcome</th>
+                    <th scope="col">Version</th>
+                    <th scope="col">Duration</th>
+                    <th scope="col">Started</th>
+                  </tr>
+                </thead>
+                <tbody data-history-list></tbody>
+              </table>
+            </div>
+            <div class="pager" data-history-pager></div>
+          </section>
+          <section
+            class="listing-page"
+            id="evaluations"
+            aria-labelledby="evaluations-heading"
+            hidden
+          >
+            <h1 id="evaluations-heading">Evaluations</h1>
+            <p class="muted">
+              Recorded cases and results from the trusted evaluator. Selection
+              trials and final assessments are shown separately when recorded.
+            </p>
+            <div class="table-toolbar">
+              <label
+                >Result
+                <select data-evaluation-filter>
+                  <option value="">All results</option>
+                  <option value="passed">Passed</option>
+                  <option value="failed">Failed</option>
+                </select></label
+              ><button
+                class="secondary-button"
+                type="button"
+                data-refresh-evaluations
+              >
+                Refresh
+              </button>
+            </div>
+            <div data-evaluations-list></div>
+          </section>
+          <section
+            class="listing-page"
+            id="versions"
+            aria-labelledby="versions-heading"
+            hidden
+          >
+            <h1 id="versions-heading">Versions</h1>
+            <p class="muted" data-version-description></p>
+            <div class="table-toolbar">
+              <label
+                >Harness
+                <select data-version-family>
+                  <option value="inventory-totals">Inventory</option>
+                  <option value="logistics-shipment-threshold">
+                    Logistics
+                  </option>
+                </select></label
+              ><label
+                >Status
+                <select data-version-filter>
+                  <option value="">All versions</option>
+                  <option value="active">Active</option>
+                </select></label
+              ><button
+                class="secondary-button"
+                type="button"
+                data-refresh-versions
+              >
+                Refresh
+              </button>
+            </div>
+            <div data-versions-list></div>
+          </section>
+          <section
+            class="evolve-page"
+            id="evolve"
+            aria-labelledby="evolve-heading"
+            hidden
+          >
+            <div class="evolve-heading">
+              <div>
+                <h1 id="evolve-heading">Evolution</h1>
+                <p class="muted" data-evolve-subtitle>
+                  Inspect candidate changes, evaluation results, and recorded
+                  progress.
+                </p>
+              </div>
+              <span class="evolve-status" data-evolve-status>Waiting</span>
+            </div>
+            <div data-evolve-error hidden></div>
+            <div data-evolve-empty hidden></div>
+            <section
+              class="verification-result"
+              data-evolve-verification
+              hidden
+              aria-label="Automatic verification"
+            ></section>
+            <dl class="job-facts">
+              <div>
+                <dt>Evolution</dt>
+                <dd data-evolve-id>—</dd>
+              </div>
+              <div>
+                <dt>Triggering run</dt>
+                <dd><a data-evolve-run>—</a></dd>
+              </div>
+              <div>
+                <dt>Last update</dt>
+                <dd data-job-updated>—</dd>
+              </div>
+            </dl>
+            <ol
+              class="stage-strip"
+              data-evolve-stages
+              aria-label="Evolution progress"
+            >
+              <li data-stage="incident_classified">Incident</li>
+              <li data-stage="diagnosing">Diagnose</li>
+              <li data-stage="proposal_received">Propose</li>
+              <li data-stage="candidate_ready">Candidate</li>
+              <li data-stage="evaluating">Evaluate</li>
+              <li data-stage="activated">Activate</li>
+            </ol>
+            <div
+              class="evidence-tabs evolution-tabs"
+              role="tablist"
+              aria-label="Evolution detail"
+            >
+              <button
+                type="button"
+                role="tab"
+                id="evolution-tab-overview"
+                aria-controls="evolution-panel-overview"
+                data-evolution-tab="overview"
+                aria-selected="true"
+              >
+                Overview</button
+              ><button
+                type="button"
+                role="tab"
+                id="evolution-tab-changes"
+                aria-controls="evolution-panel-changes"
+                data-evolution-tab="changes"
+                aria-selected="false"
+                tabindex="-1"
+              >
+                Changes</button
+              ><button
+                type="button"
+                role="tab"
+                id="evolution-tab-evaluations"
+                aria-controls="evolution-panel-evaluations"
+                data-evolution-tab="evaluations"
+                aria-selected="false"
+                tabindex="-1"
+              >
+                Evaluations</button
+              ><button
+                type="button"
+                role="tab"
+                id="evolution-tab-events"
+                aria-controls="evolution-panel-events"
+                data-evolution-tab="events"
+                aria-selected="false"
+                tabindex="-1"
+              >
+                Events
+              </button>
+            </div>
+            <div
+              class="evolve-layout"
+              role="tabpanel"
+              id="evolution-panel-overview"
+              aria-labelledby="evolution-tab-overview"
+              data-evolution-panel="overview"
+            >
+              <section
+                class="workflow-region"
+                aria-labelledby="evolve-workflow-heading"
+              >
+                <div class="section-heading">
+                  <h2 id="evolve-workflow-heading">Harness workflow</h2>
+                  <span data-evolve-workflow-version>—</span>
+                </div>
+                <div
+                  class="workflow-canvas"
+                  data-evolve-workflow
+                  aria-live="polite"
+                ></div>
+                <div
+                  class="workflow-equivalent"
+                  data-evolve-workflow-list
+                ></div>
+              </section>
+              <aside
+                class="workflow-inspector"
+                aria-labelledby="evolve-inspector-heading"
+              >
+                <div class="section-heading">
+                  <h2 id="evolve-inspector-heading">Evidence</h2>
+                  <span data-evolve-updated>—</span>
+                </div>
+                <div data-evolve-inspector>
+                  <p class="empty-state">
+                    Select a workflow component to inspect it.
+                  </p>
+                </div>
+              </aside>
+            </div>
+            <section
+              class="changes-region"
+              role="tabpanel"
+              id="evolution-panel-changes"
+              aria-labelledby="evolution-tab-changes"
+              data-evolution-panel="changes"
+              hidden
+            >
+              <div class="section-heading"><h2>Candidate changes</h2></div>
+              <div data-evolve-changes></div>
+              <p class="muted">
+                Promotion and rollback controls are available through the CLI.
+              </p>
+            </section>
+            <section
+              class="evaluation-region"
+              role="tabpanel"
+              id="evolution-panel-evaluations"
+              aria-labelledby="evolution-tab-evaluations"
+              data-evolution-panel="evaluations"
+              hidden
+              aria-labelledby="evolve-evaluations-heading"
+            >
+              <div class="section-heading">
+                <div>
+                  <h2 id="evolve-evaluations-heading">Evaluation comparison</h2>
+                  <p class="muted">
+                    The frozen plan keeps the previous and candidate harness
+                    results comparable.
+                  </p>
+                </div>
+                <span data-evolve-evaluation-status>Pending</span>
+              </div>
+              <div class="comparison-chart" data-evolve-chart></div>
+              <div class="trial-table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Case</th>
+                      <th>Harness</th>
+                      <th>Result</th>
+                      <th>Resources</th>
+                      <th>Trace</th>
+                    </tr>
+                  </thead>
+                  <tbody data-evolve-trials></tbody>
+                </table>
+              </div>
+            </section>
+            <section
+              class="event-region"
+              role="tabpanel"
+              id="evolution-panel-events"
+              aria-labelledby="evolution-tab-events"
+              data-evolution-panel="events"
+              hidden
+              aria-labelledby="evolve-events-heading"
+            >
+              <div class="section-heading">
+                <h2 id="evolve-events-heading">Recorded progress</h2>
+                <span>Stored events</span>
+              </div>
+              <div data-evolve-events></div>
+            </section>
+          </section>
+          <section
+            class="harness-page"
+            id="harness"
+            aria-labelledby="harness-heading"
+            hidden
+          >
+            <div class="evolve-heading">
+              <div>
+                <h1 id="harness-heading">Harness</h1>
+                <p class="muted">
+                  Open the active workflow or compare retained revisions.
+                </p>
+              </div>
+              <label class="family-picker"
+                >Harness
+                <select data-harness-family aria-label="Harness task family">
+                  <option value="inventory-totals">Inventory</option>
+                  <option value="logistics-shipment-threshold">
+                    Logistics
+                  </option>
+                </select></label
+              >
+            </div>
+            <div class="harness-controls">
+              <label
+                >Compare with
+                <select
+                  data-compare-revision
+                  aria-label="Compare workflow with"
+                >
+                  <option value="">No comparison</option>
+                </select></label
+              >
+            </div>
+            <div data-harness-error hidden></div>
+            <label class="mobile-revision-picker"
+              >Revision
+              <select
+                data-revision-picker
+                aria-label="Workflow revision"
+              ></select
+            ></label>
+            <div class="harness-layout">
+              <aside
+                class="workflow-history"
+                aria-label="Workflow revisions"
+                data-workflow-history
+              ></aside>
+              <section
+                class="workflow-region"
+                aria-labelledby="harness-workflow-heading"
+              >
+                <div class="section-heading">
+                  <h2 id="harness-workflow-heading">Saved workflow</h2>
+                  <span data-harness-workflow-version>—</span>
+                </div>
+                <div class="workflow-canvas" data-harness-workflow></div>
+                <div
+                  class="workflow-equivalent"
+                  data-harness-workflow-list
+                ></div>
+              </section>
+              <aside
+                class="workflow-inspector"
+                aria-labelledby="harness-inspector-heading"
+              >
+                <div class="section-heading">
+                  <h2 id="harness-inspector-heading">Component</h2>
+                </div>
+                <div data-harness-inspector>
+                  <p class="empty-state">
+                    Select a component to inspect its registration and
+                    dependencies.
+                  </p>
+                </div>
+              </aside>
+            </div>
+          </section>
+          <section
+            class="workflow-diff"
+            data-workflow-diff
+            hidden
+            aria-label="Workflow comparison"
+          ></section>
+        </main>
+      </div>
+    </div>
+    <div
+      class="toast"
+      role="status"
+      aria-live="polite"
+      data-announcement
+      hidden
+    ></div>
+    <script src="./app.js?v=5775d9addd"></script>
+  </body>
+</html>

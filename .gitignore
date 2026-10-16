@@ -1,0 +1,40 @@
+.env
+.env.*
+!.env.example
+.venv/
+.uv-cache/
+build/
+dist/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+.DS_Store
+.self-heal/
+*.egg-info/
+
+# Local credentials and private assessment material
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*.json
+secrets*.json
+self-heal-final*.json
+.envrc
+
+# Local tooling and test outputs
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+node_modules/
+
+# Demo recordings and execution evidence
+artifacts/
+
+.seal/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm

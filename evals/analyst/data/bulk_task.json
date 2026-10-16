@@ -1,0 +1,6 @@
+{
+  "scenario_id": "bulk-warehouse-available",
+  "task": {"metric": "available", "group_by": "warehouse"},
+  "planned_row_count": 512,
+  "purpose": "Phase 2 will generate an SQLite dataset large enough to exceed the base model-call budget when read page by page, while remaining within the fixed table-read budget."
+}

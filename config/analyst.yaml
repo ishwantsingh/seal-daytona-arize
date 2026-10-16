@@ -1,0 +1,59 @@
+task_contract:
+  version: inventory-totals-v1
+  family: inventory-totals
+  metrics: [on_hand, reserved, available]
+  filter_fields: [sku, warehouse, category]
+  group_fields: [warehouse, category]
+  output:
+    scalar: {value: integer}
+    grouped: {groups: mapping_of_integer_totals}
+    group_order: alphabetical
+  invalid_rows: reject_dataset
+  missing_values: reject_dataset
+  numeric_values: nonnegative_integers
+
+# Protected registry: logistics uses a reviewed bounded harness tool. The
+# contract remains separate from raw database access and inventory tasks.
+task_contracts:
+  inventory-totals-v1:
+    family: inventory-totals
+    input_kind: inventory_table
+  logistics-shipment-threshold-v1:
+    family: logistics-shipment-threshold
+    input_kind: logistics_bundle
+    operation: count_customers_with_shipment_count_gt
+    required_relations: [shipments, warehouses, customers]
+
+table_schema:
+  sku: string
+  warehouse: string
+  category: string
+  on_hand: integer
+  reserved: integer
+
+limits:
+  max_model_calls: 8
+  max_tool_calls: 12
+  max_elapsed_seconds: 90
+  max_total_tokens: 30000
+  max_page_size: 4
+  max_pages: 256
+  max_bytes: 1000000
+  max_calculator_operands: 32
+  context_rounds: 5
+
+evaluation:
+  oracle_version: inventory-totals-v1
+  scenarios_path: evals/analyst/scenarios.yaml
+  max_generated_rows: 1024
+  required_baseline_scenarios:
+    - small-east-available
+    - edge-empty-sku
+    - bulk-warehouse-available
+  max_patch_attempts: 3
+  validation_cases: 4
+  live_repetitions: 2
+  max_cost_ratio: 2.0
+  require_trace: true
+
+editable_paths: [harness/]
