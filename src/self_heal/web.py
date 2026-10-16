@@ -328,6 +328,37 @@ class WebApplication:
                       for item in self.logistics.list_dataset_info() if _operator_dataset(item.dataset_id)]
                      if self.logistics is not None else []))
             }
+        if method == "GET" and route.path == "/api/datasets/preview":
+            dataset_id = query.get("dataset_id", [""])[0]
+            input_kind = query.get("input_kind", [""])[0]
+            relation = query.get("relation", [""])[0]
+            if not dataset_id or len(dataset_id) > 100 or not _operator_dataset(dataset_id):
+                raise WebRequestError("Dataset is unavailable for preview")
+            if input_kind == "inventory_table":
+                if relation not in {"", "analyst_rows"}:
+                    raise WebRequestError("Inventory relation is invalid")
+                info = self.store.dataset_info(dataset_id)
+                rows = self.store.verified_rows(dataset_id)
+                return HTTPStatus.OK, {
+                    "dataset_id": dataset_id, "input_kind": input_kind,
+                    "relation": "analyst_rows", "relations": {"analyst_rows": info.row_count},
+                    "columns": list(self.config.table_schema), "row_count": info.row_count,
+                    "rows": rows[:20],
+                }
+            if input_kind == "logistics_bundle" and self.logistics is not None:
+                selected = relation or "shipments"
+                if selected not in {"customers", "warehouses", "shipments"}:
+                    raise WebRequestError("Logistics relation is invalid")
+                info = self.logistics.dataset_info(dataset_id)
+                rows = self.logistics.verified_relations(dataset_id)[selected]
+                return HTTPStatus.OK, {
+                    "dataset_id": dataset_id, "input_kind": input_kind,
+                    "relation": selected,
+                    "relations": {name: value["row_count"] for name, value in info.relations.items()},
+                    "columns": list(rows[0]) if rows else [],
+                    "row_count": info.relations[selected]["row_count"], "rows": rows[:20],
+                }
+            raise WebRequestError("Dataset type is invalid")
         if method == "GET" and route.path == "/api/harness-workflows":
             family = query.get("task_family", [self.config.task_family])[0]
             if family not in {self.config.task_family, "logistics-shipment-threshold"}:
@@ -760,7 +791,7 @@ class _WebRequestHandler(BaseHTTPRequestHandler):
             try:
                 status, payload = self.app.api("GET", self.path)
                 self._send_json(status, payload)
-            except (WebRequestError, ValueError) as exc:
+            except (DatasetError, WebRequestError, ValueError) as exc:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
             except Exception:
                 self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "Service is unavailable"})
