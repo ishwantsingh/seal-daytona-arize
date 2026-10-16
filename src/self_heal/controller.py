@@ -29,7 +29,7 @@ from self_heal.runner import CandidateRunner, RunnerError
 from self_heal.settings import AnalystConfig
 from self_heal.storage import HistoryStore, HistoryError
 from self_heal.table_store import TableStore, DatasetError
-from self_heal.telemetry import PhoenixTelemetry
+from self_heal.telemetry import PhoenixTelemetry, redact_trace_payload
 
 
 class EvolutionBlocked(ValueError):
@@ -500,6 +500,9 @@ class EvolutionController:
                 "reason": (row.get("selection") or {}).get(
                     "reasons", row.get("rejection_reason")
                 ),
+                "failed_development_trials": self._failed_development_trials(
+                    row["candidate_id"]
+                ),
             }
             for row in self.history.candidates_for(task_family=self.config.task_family)
         ]
@@ -637,6 +640,9 @@ class EvolutionController:
                     "hypothesis": proposal.hypothesis,
                     "status": "rejected",
                     "reason": result["selection"]["reasons"],
+                    "failed_development_trials": self._failed_development_trials(
+                        candidate_id
+                    ),
                 }
             )
         self.history.update_gap(
@@ -781,6 +787,35 @@ class EvolutionController:
             "candidate_commit": candidate_source.candidate_commit,
             "selection": summary,
         }
+
+    def _failed_development_trials(self, candidate_id):
+        """Give retries actionable public failures without exposing holdout cases."""
+        feedback = []
+        for trial in self.history.evaluations.find(
+            {
+                "candidate.candidate_id": candidate_id,
+                "candidate.version": "candidate",
+                "passed": False,
+                "case_role": {"$in": ["original", "generated_reproduction"]},
+            }
+        ):
+            run = self.history.runs.find_one({"run_id": trial["run_id"]}) or {}
+            feedback.append(
+                redact_trace_payload(
+                    {
+                        "role": trial["case_role"],
+                        "violation": trial.get("violation"),
+                        "error": trial.get("actual", {}).get("error"),
+                        "resources": trial.get("resources"),
+                        "tool_calls": (run.get("evidence") or {}).get("tool_calls", [])[
+                            :12
+                        ],
+                    }
+                )
+            )
+            if len(feedback) == 3:
+                break
+        return feedback
 
     def _observed_violation(self, observed, task, dataset):
         resources = observed.get("resources") or {}

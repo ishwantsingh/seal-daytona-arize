@@ -12,6 +12,8 @@ A patch is a hypothesis about reusable behavior. The model, task contract, oracl
 
 Phoenix shows deterministic correctness scores as CODE annotations and paired experiments. SQLite retains the authoritative frozen selection plan and decision lineage. A candidate's explanation or self-reported success cannot establish correctness.
 
+Rejected candidates return bounded tool-call feedback from failed original and generated development trials to the next proposal. Secrets, rows, and aggregate values are redacted; private validation inputs and final cases are never included. This lets a retry diagnose its actual execution failure without exposing the holdout answers.
+
 The stress scenario intentionally exceeds the initial model loop's ability to page through a large table. `eval run` distinguishes matching that expected baseline failure from passing the task. The reviewed logistics tool is an existing capability; answering its public question alone does not demonstrate autonomous improvement.
 
 Private validation is selection evidence, not an untouched final test. Reserve final datasets before evolution with `seal final reserve --manifest /tmp/seal-final.json`. An accepted active commit can be assessed once with `seal final assess`. Failed final cases are consumed too. Neither repeated development trials nor a single successful repair establish broad generalization.

@@ -219,6 +219,60 @@ class TraceReader:
         return [{"name": "analyst.run", "outputs": {"outcome": "unsupported"}}]
 
 
+def test_retry_feedback_explains_failed_tools_without_exposing_holdouts_or_values():
+    history = HistoryStore(SQLiteDatabase())
+    controller = object.__new__(EvolutionController)
+    controller.history = history
+    for role, version, passed in [
+        ("original", "candidate", False),
+        ("generated_reproduction", "candidate", False),
+        ("private_validation", "candidate", False),
+        ("original", "baseline", False),
+        ("original", "candidate", True),
+    ]:
+        run_id = str(uuid.uuid4())
+        history.evaluations.insert_one(
+            {
+                "candidate": {"candidate_id": "repair", "version": version},
+                "run_id": run_id,
+                "passed": passed,
+                "case_role": role,
+                "violation": "model_call_budget_exhausted",
+                "actual": {
+                    "answer": {"value": 987654},
+                    "error": "Model-call budget exceeded",
+                },
+            }
+        )
+        history.runs.insert_one(
+            {
+                "run_id": run_id,
+                "evidence": {
+                    "tool_calls": [
+                        {
+                            "name": "aggregate_metric",
+                            "arguments": {"filter_value": "", "api_key": "hidden-key"},
+                            "result": {"groups": {"East": 987654}},
+                        },
+                        {
+                            "name": "read_rows",
+                            "result": {"rows": [{"sku": "hidden-row"}]},
+                        },
+                    ]
+                },
+            }
+        )
+    feedback = controller._failed_development_trials("repair")
+    assert [item["role"] for item in feedback] == ["original", "generated_reproduction"]
+    assert feedback[0]["tool_calls"][0]["arguments"]["filter_value"] == ""
+    serialized = json.dumps(feedback)
+    assert all(
+        secret not in serialized
+        for secret in ["987654", "hidden-key", "hidden-row", "private_validation"]
+    )
+    assert "redacted_row_count" in serialized
+
+
 class CycleRunner(ScriptedCandidateRunner):
     def __init__(self, store, history, config, parent):
         super().__init__(store)

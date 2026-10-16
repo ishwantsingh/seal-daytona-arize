@@ -13,3 +13,8 @@ Treat `rows` as a list of row objects. If a new tool scans pages, it must contin
 to `next_cursor == null` or fail explicitly, respect the page and byte budgets,
 and return totals in the requested metric and group shape. Preserve existing
 instructions without duplicating or contradicting them.
+Diagnose the actual tool arguments in the supplied trace and failed development
+trials. Adding aggregation alone does not fix a model that invents filters. Make
+the tool interface and context explicit about the validated task: absent filters
+must be omitted, and an empty string is a real equality value, not "all rows".
+Do not silently discard a filter that the user actually requested.
