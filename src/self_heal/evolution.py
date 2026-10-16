@@ -109,7 +109,10 @@ def _proposal_from_json(
                 tofile="b/" + path,
             )
         )
-        diffs.append(f"diff --git a/{path} b/{path}\n" + diff)
+        header = f"diff --git a/{path} b/{path}\n"
+        if name not in source:
+            header += "new file mode 100644\n"
+        diffs.append(header + diff)
     if not diffs:
         raise ProposalError("Proposed files contain no source change")
     return EvolutionProposal(
