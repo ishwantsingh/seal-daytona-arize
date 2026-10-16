@@ -19,6 +19,7 @@ from self_heal.evaluation import (
     SelectionEvaluator,
     _error_violation,
     _selection_violation,
+    baseline_failure_reproduced,
 )
 from self_heal.evolution import ProposalError, propose_change, propose_scenario
 from self_heal.model import ChatModel
@@ -458,14 +459,12 @@ class EvolutionController:
             )
             violation = _selection_violation(case, execution.result, self.config)
             self._record_probe(case, execution, violation, baseline_commit)
-            if case is original:
-                reproduced = (
-                    execution.result.outcome == "unsupported"
-                    if observed_violation == "capability_refusal_for_answerable_case"
-                    else violation == observed_violation
-                )
-            else:
-                reproduced = violation == observed_violation
+            reproduced = baseline_failure_reproduced(
+                outcome=execution.result.outcome,
+                error=execution.result.error,
+                violation=violation,
+                observed_violation=observed_violation,
+            )
             if not reproduced:
                 raise EvolutionBlocked(
                     f"Baseline failure did not reproduce on {case.role}"

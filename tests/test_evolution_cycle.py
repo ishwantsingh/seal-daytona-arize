@@ -573,3 +573,81 @@ def test_resume_reuses_frozen_generated_case_without_reproposing_dataset(tmp_pat
     result = controller.evolve(run_id)
     assert result["status"] == "activated", result
     assert history.get_eval_case(frozen.case_id)["dataset"] == before
+
+
+@pytest.mark.parametrize(
+    "baseline_error,expected_status",
+    [
+        ("Model final answer is not JSON", "activated"),
+        ("Model or runtime failure: ConnectionError", "open"),
+        ("Isolated candidate failure: ConnectionError", "open"),
+    ],
+)
+def test_reproduction_grades_task_failure_and_excludes_infrastructure(
+    tmp_path, baseline_error, expected_status
+):
+    from dataclasses import replace
+
+    question = "What are the available units in each warehouse?"
+    store, history, config, parent, run_id = cycle_setup(tmp_path, question)
+    task = {"metric": "available", "group_by": "warehouse"}
+    history.runs.update_one(
+        {"_id": run_id},
+        {
+            "$set": {
+                "outcome": "error",
+                "error": "Model-call budget exceeded before a final answer",
+                "interpreted_task": task,
+            }
+        },
+    )
+
+    class VaryingRunner(CycleRunner):
+        def run(self, **kwargs):
+            execution = super().run(**kwargs)
+            if kwargs["source_commit"] == parent and kwargs["case_exposure"] in {
+                "reproduction",
+                "original",
+                "generated_reproduction",
+            }:
+                execution = replace(
+                    execution,
+                    result=replace(
+                        execution.result,
+                        outcome="error",
+                        error=baseline_error,
+                        limitation_kind=None,
+                    ),
+                )
+            return execution
+
+    controller = EvolutionController(
+        store=store,
+        history=history,
+        config=config,
+        telemetry=TraceReader(),
+        repository=CandidateRepository(tmp_path),
+        runner=VaryingRunner(store, history, config, parent),
+        model_factory=Model,
+        evolution_model=ProposalModel(
+            [
+                {
+                    "hypothesis": "Reusable scan",
+                    "changed_mechanism": "bounded_scan",
+                    "diff": "--- a/harness/tools.py\n+++ b/harness/tools.py\n@@ -1 +1 @@\n-VALUE = 1\n+VALUE = 2\n",
+                }
+            ]
+        ),
+    )
+    controller.evaluator.freeze_case(
+        scenario_id="observed-" + run_id.replace("-", "")[:24],
+        dataset=store.dataset_info("observed"),
+        invocation=question,
+        task=task,
+        role="generated_reproduction",
+        origin="model_proposed_protected_oracle",
+    )
+    result = controller.evolve(run_id)
+    assert result["status"] == expected_status, result
+    if expected_status == "open":
+        assert history.active_version(config.task_family) is None
