@@ -58,6 +58,63 @@ def test_truncated_structured_reply_is_rejected_before_patch_screening():
         _request_json(model, "Return JSON", {}, schema=PATCH_SCHEMA)
 
 
+def test_agent_tool_schemas_preserve_optional_fields_without_mutating_source():
+    requests = []
+    model = OpenRouterModel.__new__(OpenRouterModel)
+    model.model, model.timeout_seconds = "test", 45
+    model.client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(
+                create=lambda **kwargs: (
+                    requests.append(kwargs)
+                    or SimpleNamespace(
+                        choices=[
+                            SimpleNamespace(
+                                message=SimpleNamespace(
+                                    content=None,
+                                    tool_calls=[
+                                        SimpleNamespace(
+                                            id="call",
+                                            function=SimpleNamespace(
+                                                name="read_rows",
+                                                arguments='{"limit":4}',
+                                            ),
+                                        )
+                                    ],
+                                )
+                            )
+                        ],
+                        usage=None,
+                    )
+                )
+            )
+        )
+    )
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "read_rows",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {"type": "integer"},
+                        "filter_value": {"type": "string"},
+                    },
+                    "required": ["limit"],
+                },
+            },
+        }
+    ]
+    result = model.complete([], tools)
+    function = requests[0]["tools"][0]["function"]
+    assert function["strict"] is False
+    assert function["parameters"]["required"] == ["limit"]
+    assert "strict" not in tools[0]["function"]
+    assert json.loads(result.tool_calls[0].arguments) == {"limit": 4}
+    assert model.tracing_settings["default_tool_schema_strict"] is False
+
+
 def test_scripted_models_still_use_the_same_validated_json_boundary():
     model = SimpleNamespace(
         complete=lambda messages, tools: ModelReply(

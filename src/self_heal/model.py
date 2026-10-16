@@ -51,6 +51,7 @@ class OpenRouterModel:
             "temperature": 0,
             "tool_choice": "auto",
             "parallel_tool_calls": False,
+            "default_tool_schema_strict": False,
             "timeout_seconds": getattr(self, "timeout_seconds", None),
         }
 
@@ -96,7 +97,15 @@ class OpenRouterModel:
             "temperature": 0,
         }
         if tools:
-            request.update(tools=tools, tool_choice="auto", parallel_tool_calls=False)
+            # Some providers default to strict schemas and fill optional fields.
+            # Preserve our declared `required` fields and caller-owned schemas.
+            normalized_tools = [
+                {**tool, "function": {"strict": False, **tool["function"]}}
+                for tool in tools
+            ]
+            request.update(
+                tools=normalized_tools, tool_choice="auto", parallel_tool_calls=False
+            )
         response = self.client.chat.completions.create(**request)
         if not response.choices:
             raise RuntimeError("Model returned no choices")
