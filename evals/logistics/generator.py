@@ -71,4 +71,11 @@ def private_evaluation_bundle(seed: int) -> dict[str, Any]:
             "origin_warehouse_id": warehouse_ids["W3"],
             "status": "sent", "sent_at": base["shipments"][0]["sent_at"],
         })
+    # Vary entity cardinality too: a constant eight-customer answer must fail.
+    for index in range(seed % 11 + 1):
+        customers.append({"customer_id": f"{suffix}-NEW{index}",
+                          "segment": ("enterprise", "retail")[index % 2],
+                          "status": ("active", "inactive")[index % 2]})
+    warehouses.append({"warehouse_id": f"{suffix}-NEW", "warehouse_number": 10 + seed % 13,
+                       "timezone": "America/New_York"})
     return {**base, "customers": customers, "warehouses": warehouses, "shipments": shipments}

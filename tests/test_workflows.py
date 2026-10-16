@@ -97,6 +97,9 @@ def test_browser_run_binds_a_saved_workflow_and_queues_one_durable_job():
     assert run["evolution_job_id"].startswith("evolution_")
     _, workflow = app.api("GET", "/api/harness-workflows/" + run["workflow_revision_id"])
     assert workflow["graph"]["nodes"]
+    source = app.history.get_run(run["run_id"])["execution"]["source"]
+    assert source["dirty"] is False
+    assert source["commit"] == workflow["source_commit"]
     _, jobs = app.api("GET", "/api/evolution-jobs/" + run["evolution_job_id"] + "/events?after=0")
     assert [event["stage"] for event in jobs["events"]] == ["incident_classified", "workflow_snapshot_ready", "blocked"]
     _, repeated = app.evolution_jobs.queue(incident_run_id=run["run_id"], workflow_revision_id=run["workflow_revision_id"])
@@ -207,3 +210,19 @@ def test_changed_source_under_same_version_label_creates_a_new_immutable_workflo
         history.record_workflow(second.record)
         assert history.harness_workflows.find_one({"_id": first.revision_id})["graph_hash"] == first.graph_hash
         assert history.record_workflow(second.record)["workflow_revision_id"] == second.revision_id
+
+
+def test_evolution_blocker_is_not_misreported_as_an_operational_error():
+    from self_heal.controller import EvolutionBlocked
+    history = _history()
+    history.runs.insert_one({"_id": "blocked-incident", "run_id": "blocked-incident", "status": "completed"})
+    class Controller:
+        def evolve(self, _run_id):
+            raise EvolutionBlocked("Pinned evidence is unavailable")
+    service = EvolutionJobService(history=history, controller_factory=lambda _progress: Controller())
+    job, _ = service.queue(incident_run_id="blocked-incident", workflow_revision_id=None)
+    service._threads[job["job_id"]].join(timeout=5)
+    stored = history.get_evolution_job(job["job_id"])
+    assert stored["status"] == "blocked"
+    assert stored["reason"] == "Pinned evidence is unavailable"
+    assert history.evolution_events_after(job["job_id"])[-1]["stage"] == "blocked"

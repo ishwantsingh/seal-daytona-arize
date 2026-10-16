@@ -29,7 +29,7 @@ from self_heal.database import ASCENDING
 from harness.agent import RunResult
 from harness.tools import AnalystTools
 from harness.logistics import LogisticsAgent, LogisticsTools, TOOL_VERSION
-from self_heal.execution import RunExecution, RunExecutor
+from self_heal.execution import RunExecution, RunExecutor, baseline_source_commit
 from self_heal.model import ChatModel
 from self_heal.settings import AnalystConfig, PhoenixConfig
 from self_heal.storage import HistoryStore
@@ -39,7 +39,7 @@ from self_heal.repository import CandidateRepository
 from self_heal.runner import CandidateRunner
 from self_heal.evidence import safe_payload
 from self_heal.logistics_store import DatasetBundleInfo, LogisticsDatasetStore
-from self_heal.contracts import canonical_hash, source_identity
+from self_heal.contracts import canonical_hash
 from self_heal.evolution_jobs import EvolutionJobService
 from self_heal.workflow import extract_workflow, proposal_overlay, workflow_diff
 from evals.logistics.generator import public_incident_bundle
@@ -534,6 +534,7 @@ class WebApplication:
                     payload["evolution_job_id"] = job["job_id"]
                     payload["evolution_url"] = "#evolve/" + job["job_id"]
                     payload["evolution_state"] = job.get("status")
+                    payload["evolution_reason"] = job.get("reason")
             return HTTPStatus.CREATED, payload
         if method == "POST" and route.path == "/api/datasets/logistics":
             if body != {} or self.logistics is None:
@@ -663,12 +664,14 @@ class WebApplication:
                       invocation=request["question"], model=self.model_factory(),
                       workflow_revision_id=workflow_revision_id)
                 return execution, dataset
+            baseline_commit = baseline_source_commit()
+            baseline_source = CandidateRepository(PROJECT_ROOT).active_checkout(baseline_commit)
             workflow_revision_id = self._ensure_workflow(task_family=logistics_config.task_family,
-                                                          source=PROJECT_ROOT, source_commit=TOOL_VERSION)
+                                                          source=baseline_source, source_commit=baseline_commit)
             execution = RunExecutor(history=self.history, telemetry=self.telemetry, config=logistics_config).run(
                 model=self.model_factory(), tools=LogisticsTools(self.logistics.open_session(dataset_id), logistics_config),
                 dataset=dataset, invocation=request["question"], agent_factory=LogisticsAgent,
-                workflow_revision_id=workflow_revision_id)
+                workflow_revision_id=workflow_revision_id, source_commit=baseline_commit)
             return execution, dataset
         dataset = self.store.dataset_info(dataset_id) if dataset_id is not None else self._default_dataset()
         active = self.history.active_version(self.config.task_family)
@@ -684,15 +687,17 @@ class WebApplication:
                   workflow_revision_id=workflow_revision_id)
             return execution, dataset
         table = self.store.open_session(dataset.dataset_id)
-        baseline_commit = source_identity()["source"]["commit"]
+        baseline_commit = baseline_source_commit()
+        baseline_source = CandidateRepository(PROJECT_ROOT).active_checkout(baseline_commit)
         workflow_revision_id = self._ensure_workflow(task_family=self.config.task_family,
-                                                      source=PROJECT_ROOT, source_commit=baseline_commit)
+                                                      source=baseline_source, source_commit=baseline_commit)
         execution = RunExecutor(history=self.history, telemetry=self.telemetry, config=self.config).run(
             model=self.model_factory(),
             tools=AnalystTools(table, self.config),
             dataset=dataset,
             invocation=request["question"],
             workflow_revision_id=workflow_revision_id,
+            source_commit=baseline_commit,
         )
         return execution, dataset
 

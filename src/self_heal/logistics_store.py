@@ -15,14 +15,12 @@ import json
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import Any, Mapping
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from self_heal.database import ASCENDING
 from self_heal.database import SQLiteDatabase as Database
-
 from self_heal.table_store import DatasetError, TableAccessError
-
 
 RELATIONS = ("customers", "warehouses", "shipments")
 _SHIPMENT_STATUSES = {"created", "sent", "cancelled"}
@@ -132,7 +130,7 @@ class LogisticsDatasetStore:
         return [self.dataset_info(item["_id"]) for item in self._datasets.find({"status": "ready"}, {"_id": 1}).sort("_id", ASCENDING)]
 
     def open_session(self, dataset_id: str) -> "LogisticsSession":
-        return LogisticsSession(self._shipments, self._warehouses, self.dataset_info(dataset_id))
+        return LogisticsSession(self._shipments, self._warehouses, self.dataset_info(dataset_id), self._customers)
 
     def verified_relations(self, dataset_id: str) -> dict[str, list[dict[str, Any]]]:
         self.dataset_info(dataset_id)
@@ -246,8 +244,9 @@ def _stored_utc_datetime(value: datetime | str, name: str) -> datetime:
 class LogisticsSession:
     """Narrow model-facing logistics capability; all filtering is host-defined."""
 
-    def __init__(self, shipments: Any, warehouses: Any, bundle: DatasetBundleInfo) -> None:
+    def __init__(self, shipments: Any, warehouses: Any, bundle: DatasetBundleInfo, customers: Any = None) -> None:
         self._shipments, self._warehouses, self._bundle = shipments, warehouses, bundle
+        self._relations = {"shipments": shipments, "warehouses": warehouses, "customers": customers}
         self._cursor_key = secrets.token_bytes(32)
         self._completed_scans: set[str] = set()
         self.pages_read = self.bytes_read = self.rows_read = 0
@@ -266,6 +265,30 @@ class LogisticsSession:
     def inspect_relation(self, relation: str) -> dict[str, Any]:
         if relation not in RELATIONS: raise TableAccessError("Unknown relation")
         return {"relation": relation, "row_count": self._bundle.relations[relation]["row_count"]}
+
+    def read_relation(self, *, relation: str, limit: int, cursor: str | None = None) -> dict[str, Any]:
+        """Read a bounded page from this immutable bundle, with a signed cursor."""
+        if not isinstance(relation, str) or relation not in RELATIONS or type(limit) is not int or not 1 <= limit <= 100:
+            raise TableAccessError("Invalid relation read")
+        fingerprint = "relation:" + relation
+        last = self._decode(cursor, fingerprint) if cursor else -1
+        collection = self._relations[relation]
+        if collection is None:
+            raise TableAccessError("Relation is unavailable")
+        docs = list(collection.find({"dataset_id": self.dataset_id, "position": {"$gt": last}})
+                    .sort("position", ASCENDING).limit(limit + 1))
+        page = docs[:limit]
+        rows = [_canonical_document(relation, doc) for doc in page]
+        self.pages_read += 1
+        self.bytes_read += len(json.dumps(rows, separators=(",", ":")).encode())
+        self.rows_read += len(rows)
+        next_cursor = self._encode(page[-1]["position"], fingerprint) if len(docs) > limit else None
+        if next_cursor is None:
+            self._completed_scans.add(fingerprint)
+        return {"rows": rows, "next_cursor": next_cursor}
+
+    def completed_relation_scan(self, relation: str) -> bool:
+        return "relation:" + relation in self._completed_scans
 
     def read_shipments(self, *, warehouse_number: int, relative_day: str, limit: int, cursor: str | None = None) -> dict[str, Any]:
         if type(warehouse_number) is not int or relative_day != "yesterday" or type(limit) is not int or not 1 <= limit <= 100:

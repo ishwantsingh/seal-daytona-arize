@@ -188,12 +188,18 @@ def test_router_requires_an_explicit_input_kind():
         router.describe(input_kind="unknown", dataset_id="inventory")
 
 
-def test_logistics_evolution_uses_the_bundle_controller_and_records_paired_trials():
+@pytest.mark.parametrize("aggregate", [False, True])
+def test_logistics_evolution_uses_the_bundle_controller_and_records_paired_trials(aggregate):
     store, database, dataset, _ = materialized_store()
     history = HistoryStore(database)
     history.ensure_indexes()
     config = load_config()
     question = "How many customers sent more than 15 shipments from warehouse 3 yesterday?"
+    from evals.logistics import relational
+    aggregate_task = {"operation": "relational_aggregate", "relation": "customers", "aggregate": "count",
+                      "field": None, "filters": [], "group_by": None}
+    if aggregate:
+        question = "How many total customers do we have"
     history.runs.insert_one({
         "_id": "logistics-gap", "run_id": "logistics-gap", "status": "completed",
         "outcome": "unsupported", "limitation_kind": "capability_gap",
@@ -224,7 +230,10 @@ def test_logistics_evolution_uses_the_bundle_controller_and_records_paired_trial
             match = re.search(r"more than (\d+) shipments from warehouse (\d+)", invocation) if isinstance(invocation, str) and "yesterday" in invocation else None
             request = {"operation": "count_customers_with_shipment_count_gt", "threshold": int(match[1]),
                        "warehouse_number": int(match[2]), "relative_day": "yesterday"} if match else None
-            if getattr(dataset, "input_kind", "inventory_table") == "logistics_bundle" and request and source_commit == "candidate":
+            if aggregate and getattr(dataset, "input_kind", "inventory_table") == "logistics_bundle" and "today" not in invocation and source_commit == "candidate":
+                result = RunResult(str(uuid.uuid4()), relational.reference_answer(store.verified_relations(dataset.dataset_id), aggregate_task),
+                                   None, "answered", aggregate_task, 0, 1, 0, 0.01, 2, 100)
+            elif getattr(dataset, "input_kind", "inventory_table") == "logistics_bundle" and request and source_commit == "candidate":
                 task = {key: request[key] for key in ("operation", "warehouse_number", "relative_day", "threshold")}
                 bundle = {**store.verified_relations(dataset.dataset_id),
                           "reference_instant": dataset.reference_instant.isoformat(),
@@ -246,6 +255,13 @@ def test_logistics_evolution_uses_the_bundle_controller_and_records_paired_trial
 
     class ProposalModel:
         def complete(self, messages, *_args):
+            if aggregate:
+                if "independent logistics oracle" in messages[0]["content"]:
+                    return ModelReply('{"needs_contract":true}')
+                if "Interpret the question as a declarative" in messages[0]["content"]:
+                    return ModelReply(json.dumps(aggregate_task))
+                if "Independently check" in messages[0]["content"]:
+                    return ModelReply('{"matches":true}')
             if "independent logistics oracle" in messages[0]["content"]:
                 return ModelReply(json.dumps({"operation": "count_customers_with_shipment_count_gt",
                     "warehouse_number": 3, "relative_day": "yesterday", "threshold": 15}))
@@ -268,6 +284,14 @@ def test_logistics_evolution_uses_the_bundle_controller_and_records_paired_trial
     assert history.candidates.count_documents({"incident_run_id": "logistics-gap"}) == 1
     assert history.selection_plans.count_documents({}) == 1
     assert history.evaluations.count_documents({"plan_id": {"$exists": True}}) > 0
+    if aggregate:
+        # Inspect the selection result rather than assuming proposal creation is success.
+        candidate = history.candidates.find_one({"incident_run_id": "logistics-gap"})
+        protected = [trial for trial in candidate["selection"]["trials"]
+                     if trial["version"] == "candidate" and trial["role"] in
+                     {"original", "generated_reproduction", "private_validation", "negative_refusal"}]
+        assert protected and all(trial["passed"] for trial in protected)
+
 
 
 def test_logistics_proposer_receives_the_observed_tool_boundary_and_page_schema():
@@ -334,7 +358,7 @@ def test_logistics_evolution_preserves_new_operations_as_needing_an_oracle():
         "capability_request": {"operation": "monthly_shipments_by_segment"},
         "dataset": {"id": dataset.dataset_id, "content_hash": dataset.content_hash, "input_kind": "logistics_bundle"},
     })
-    model = ScriptedModel([ModelReply('{"needs_contract":true}')])
+    model = ScriptedModel([ModelReply('{"needs_contract":true}'), ModelReply('{"needs_contract":true}')])
     controller = LogisticsEvolutionController(
         logistics=store, history=history, config=load_config(),
         telemetry=PhoenixTelemetry(PhoenixConfig(enabled=False, project="test")),

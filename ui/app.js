@@ -2279,6 +2279,16 @@
     );
   window.addEventListener("hashchange", () => showPage(location.hash.slice(1)));
   function runMessage(run) {
+    if (run.evolution_job_id && run.evolution_state) {
+      if (["queued", "running"].includes(run.evolution_state)) {
+        return "This needs a new capability. Evolution has started to build and test it. Open View evolution for progress.";
+      }
+      if (run.evolution_state === "activated") {
+        return "Evolution built and activated a validated capability. Open View evolution for the rerun result.";
+      }
+      return "Evolution ran but could not activate a capability: " +
+        (run.evolution_reason || run.evolution_state.replaceAll("_", " ")) + ". Open View evolution for details.";
+    }
     return (
       run.message ||
       (run.outcome === "unsupported"
@@ -2633,6 +2643,10 @@
       if (followReply) scrollChat();
       announce("Analyst replied");
       loadHistory();
+      if (run.evolution_job_id && !$("#ask").hidden) {
+        saveChat();
+        location.hash = "#evolve/" + encodeURIComponent(run.evolution_job_id);
+      }
     } catch (error) {
       if (sequence !== chatSequence) return;
       const followReply = chatNearBottom();

@@ -460,7 +460,8 @@ class SelectionEvaluator:
                 )
             )
         for stored in self.history.eval_cases.find(
-            {"origin": "observed_incident", "exposures.role": "regression"}
+            {"origin": "observed_incident", "exposures.role": "regression",
+             "dataset.input_kind": {"$ne": "logistics_bundle"}}
         ):
             if not stored.get("invocation") or not stored.get("task"):
                 continue

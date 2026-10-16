@@ -357,6 +357,8 @@ test("reload restores full replies, errors, links, draft, and source even when o
     first.d.querySelector("#question").value = prompt;
     first.d.querySelector("#analysis-form").requestSubmit();
     await tick();
+    first.w.location.hash = "#ask";
+    await tick();
   }
   first.d.querySelector("#question").value = "Unsent\ndraft";
   first.d.querySelector("#question").dispatchEvent(new first.w.Event("input"));
@@ -454,7 +456,7 @@ test("invalid saved state and unavailable browser storage do not break chat", as
   assert.equal(d.querySelector('[data-chat-role="assistant"] p').textContent, "18 available units");
   assert.equal(d.querySelector("[data-run-button]").disabled, false);
 });
-test("chat presents capability gaps, execution errors, and numeric or grouped answers without redirects", async (t) => {
+test("chat automatically opens evolution for gaps and retains ordinary replies", async (t) => {
   const responses = [
     { ...run("gap", "unsupported"), message: "", limitation_reason: "Tool required", evolution_job_id: "job/1" },
     { ...run("error", "error"), message: "", error: "Runner unavailable" },
@@ -469,8 +471,15 @@ test("chat presents capability gaps, execution errors, and numeric or grouped an
     d.querySelector("#question").value = "Question " + response.run_id;
     d.querySelector("#analysis-form").requestSubmit();
     await tick();
-    assert.equal(w.location.hash, "");
-    assert.equal(d.querySelector("#ask").hidden, false);
+    if (response.evolution_job_id) {
+      assert.equal(w.location.hash, "#evolve/" + encodeURIComponent(response.evolution_job_id));
+      assert.equal(d.querySelector("#evolve").hidden, false);
+      w.location.hash = "#ask";
+      await tick();
+    } else {
+      assert.equal(w.location.hash, "#ask");
+      assert.equal(d.querySelector("#ask").hidden, false);
+    }
   }
   const replies = d.querySelectorAll('[data-chat-role="assistant"]');
   assert.deepEqual([...replies].map(node => node.querySelector("p").textContent), [
@@ -929,4 +938,33 @@ test("Reset chat clears pending state and ignores late responses after a new req
   assert.equal(question.value, "");
   assert.equal(d.querySelectorAll("[data-chat-role]").length, 0);
   assert.deepEqual(JSON.parse(w.localStorage.getItem("selfHealChat")).messages, []);
+});
+
+test("capability gap replies show actual evolution state and retain its link", async (t) => {
+  const responses = [
+    { ...run("queued", "unsupported"), evolution_job_id: "job-queued", evolution_state: "queued" },
+    { ...run("blocked", "unsupported"), evolution_job_id: "job-blocked", evolution_state: "blocked",
+      evolution_reason: "Evolution worker is not configured" },
+    { ...run("contract", "unsupported"), evolution_job_id: "job-contract", evolution_state: "needs_contract",
+      evolution_reason: "Independent correctness oracle required" },
+  ];
+  let next = 0;
+  const { d } = await setup(t, {
+    "/api/runs": (_, options) => options.method === "POST" ? responses[next++] : { runs: [] },
+  });
+  for (const response of responses) {
+    d.querySelector("#question").value = "Count all customers";
+    d.querySelector("#analysis-form").requestSubmit();
+    await tick();
+    d.querySelector('[data-nav="ask"]').click();
+    await tick();
+  }
+  const replies = d.querySelectorAll('[data-chat-role="assistant"]');
+  assert.match(replies[0].textContent, /Evolution has started/);
+  assert.match(replies[1].textContent, /Evolution worker is not configured/);
+  assert.match(replies[2].textContent, /Independent correctness oracle required/);
+  for (let index = 0; index < replies.length; index++) {
+    assert.equal(replies[index].querySelectorAll("a")[1].getAttribute("href"), "#evolve/" + responses[index].evolution_job_id);
+    assert.doesNotMatch(replies[index].textContent, /18 available units/);
+  }
 });

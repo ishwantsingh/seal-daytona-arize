@@ -278,3 +278,56 @@ class LogisticsTools(_BaseTools):
     assert result.answer == {"value": 74}
     assert result.interpreted_task == {"operation": "shipment_row_count"}
     assert result.model_calls == 2 and result.tool_calls == 1
+
+
+def test_relational_candidate_bridge_requires_a_complete_scan(tmp_path):
+    from test_logistics import ScriptedModel as ReplyModel
+    from evals.logistics.relational import reference_answer
+
+    source = tmp_path / "harness"
+    shutil.copytree(ROOT / "harness", source)
+    with (source / "logistics.py").open("a") as file:
+        file.write('''
+_BaseTools = LogisticsTools
+class LogisticsTools(_BaseTools):
+    def definitions(self):
+        return super().definitions() + [{"type": "function", "function": {
+            "name": "count_relation", "description": "Count rows in a relation.",
+            "parameters": {"type": "object", "properties": {
+                "relation": {"type": "string"}, "partial": {"type": "boolean"}},
+                "required": ["relation", "partial"], "additionalProperties": False}}}]
+    def execute(self, name, arguments):
+        if name != "count_relation":
+            return super().execute(name, arguments)
+        cursor, count = None, 0
+        for _ in range(self.config.limits.max_pages):
+            page = self.table.read_relation(relation=arguments["relation"], limit=3, cursor=cursor)
+            count += len(page["rows"])
+            cursor = page["next_cursor"]
+            if cursor is None or arguments["partial"]:
+                return {"value": count}
+        raise ValueError("Page budget exceeded")
+''')
+    config = load_config(ROOT / "config" / "analyst.yaml")
+    database = SQLiteDatabase()
+    logistics = LogisticsDatasetStore(database)
+    bundle = public_incident_bundle()
+    dataset = logistics.materialize("aggregate", **bundle)
+    runner = CandidateRunner(store=TableStore(database, config), logistics=logistics, config=config, history=None,
+        telemetry=PhoenixTelemetry(PhoenixConfig(enabled=False, project="test")), transport_factory=LocalProcessTransport)
+    for relation in ("customers", "warehouses", "shipments"):
+        task = {"operation": "relational_aggregate", "relation": relation, "aggregate": "count",
+                "field": None, "filters": [], "group_by": None}
+        answer = reference_answer(bundle, task)
+        for partial in (False, True):
+            table = logistics.open_session(dataset.dataset_id)
+            model = ReplyModel([
+                ModelReply(None, (ToolCall("count", "count_relation", json.dumps({"relation": relation, "partial": partial})),), 10),
+                ModelReply(json.dumps({"task": task, "answer": answer}), (), 10)])
+            result = runner._execute_sandbox(source, "Count all " + relation, "aggregate-run", table, model,
+                LogisticsTools(table, config), input_kind="logistics_bundle")
+            if partial and relation != "warehouses":
+                assert result.outcome == "error" and "not fully read" in result.error
+            else:
+                assert result.outcome == "answered", result.error
+                assert result.answer == answer

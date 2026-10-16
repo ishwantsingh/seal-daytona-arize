@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
+import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,14 +36,46 @@ class CandidateRepository:
         self.repository = repository.resolve()
         self.worktrees = (worktrees or self.repository / ".self-heal" / "worktrees").resolve()
 
-    def _git(self, *args: str, cwd: Path | None = None, input: str | None = None) -> str:
+    def _git(self, *args: str, cwd: Path | None = None, input: str | None = None, env: dict[str, str] | None = None) -> str:
         result = subprocess.run(
             ["git", *args], cwd=cwd or self.repository, input=input,
-            text=True, capture_output=True, timeout=30, check=False,
+            text=True, capture_output=True, timeout=30, check=False, env=env,
         )
         if result.returncode:
             raise PatchRejected(f"Git operation failed: {result.stderr.strip()[:300]}")
         return result.stdout.strip()
+
+    def snapshot_harness(self, files: dict[str, str]) -> str:
+        """Pin loaded harness bytes without changing HEAD, the index, or local files.
+
+        Only harness Python source is overlaid on HEAD. Untracked data, secrets,
+        logs and unrelated local edits never enter the snapshot.
+        """
+        if not files or any(not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\.py", name)
+                            or not isinstance(content, str) for name, content in files.items()):
+            raise PatchRejected("Invalid harness source snapshot")
+        parent = self.resolve_commit("HEAD")
+        with tempfile.TemporaryDirectory(prefix="seal-source-") as temporary:
+            env = {**os.environ, "GIT_INDEX_FILE": str(Path(temporary) / "index")}
+            self._git("read-tree", parent, env=env)
+            tracked = self._git("ls-files", "--", "harness/", env=env).splitlines()
+            for path in tracked:
+                self._git("update-index", "--force-remove", "--", path, env=env)
+            for name, content in sorted(files.items()):
+                blob = self._git("hash-object", "-w", "--stdin", input=content)
+                self._git("update-index", "--add", "--cacheinfo", "100644", blob, "harness/" + name, env=env)
+            tree = self._git("write-tree", env=env)
+        if tree == self._git("rev-parse", parent + "^{tree}"):
+            return parent
+        ref = "refs/self-heal/snapshots/" + tree
+        existing = self._git("for-each-ref", "--format=%(objectname)", ref)
+        if existing:
+            return self.resolve_commit(existing)
+        identity = {**os.environ, "GIT_AUTHOR_NAME": "Self-Heal", "GIT_AUTHOR_EMAIL": "self-heal@local.invalid",
+                    "GIT_COMMITTER_NAME": "Self-Heal", "GIT_COMMITTER_EMAIL": "self-heal@local.invalid"}
+        commit = self._git("commit-tree", tree, "-p", parent, input="Immutable observed harness snapshot\n", env=identity)
+        self._git("update-ref", ref, commit)
+        return commit
 
     def resolve_commit(self, ref: str) -> str:
         if not ref or ref == "unknown":

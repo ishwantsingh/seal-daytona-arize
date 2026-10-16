@@ -267,7 +267,9 @@ computes the exact Git diff. Use only the Python standard library. Do not use da
 answers, evaluation code, credentials, raw databases, subprocesses, or changed limits.
 
 The only approved data interface is the assigned scoped logistics session. It exposes
-`inspect_catalog()`, `inspect_relation(relation)`, and
+`inspect_catalog()`, `inspect_relation(relation)`,
+`read_relation(relation=..., limit=..., cursor=None)` returning
+{"rows": [schema row objects], "next_cursor": signed_string_or_null}, and
 `read_shipments(warehouse_number=..., relative_day=..., limit=..., cursor=None)`, which
 returns {"shipments": [{"shipment_id": string, "sender_customer_id": string}],
 "next_cursor": signed_string_or_null}. Rows are already scoped to sent shipments at the
@@ -277,7 +279,16 @@ are not forwarded. Implement aggregation inside `execute` and call it through th
 observed boundary. Pages read inside one tool execution consume the page budget rather
 than one tool call per page. A reusable tool must continue through its signed cursor
 until `next_cursor` is null, respect the existing page, byte, and time budgets, and
-return the protected scalar output shape {"value": integer}. Preserve unrelated
+return the contract output shape {"value": number} or {"groups": {group: number}}.
+For relational_aggregate implement reusable aggregation over the requested relation,
+with the contract's aggregate, field, filters and group_by. Report interpreted_task with
+exactly those contract keys (including nulls and empty filters). A missing field for count
+means count rows. Even for counts, read every relation page; catalog row counts alone
+cannot satisfy candidate evidence checks. Use Python standard library aggregation;
+no SQL or database imports. If aggregates need fractional values, extend the harness's
+answer parsing and model instructions for finite numbers in logistics while retaining
+strict integer answers for inventory. The host accepts finite relational numbers.
+Preserve the shipment threshold tool and existing capabilities. Preserve unrelated
 inventory behavior and never add a new external integration or MCP."""
     raw = _request_json(
         model,

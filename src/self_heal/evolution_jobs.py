@@ -8,8 +8,8 @@ from collections.abc import Callable
 from typing import Any
 
 from self_heal.contracts import utc_now
+from self_heal.controller import EvolutionBlocked
 from self_heal.storage import HistoryStore
-
 
 ControllerFactory = Callable[[Callable[[str, dict[str, Any]], None]], Any]
 CandidateWorkflowCapture = Callable[[dict[str, Any], dict[str, Any]], str | None]
@@ -154,6 +154,12 @@ class EvolutionJobService:
                 self.history.append_evolution_event(job_id, stage=terminal, payload={
                     "reason": result.get("reason"), "candidate_id": result.get("candidate_id"),
                 }, at=utc_now())
+        except EvolutionBlocked as exc:
+            reason = str(exc)
+            self.history.update_evolution_job(job_id, status="blocked", patch={
+                "stage": "blocked", "reason": reason,
+            }, at=utc_now())
+            self.history.append_evolution_event(job_id, stage="blocked", payload={"reason": reason}, at=utc_now())
         except Exception as exc:
             self.history.update_evolution_job(job_id, status="operational_error", patch={
                 "stage": "operational_error", "reason": f"{type(exc).__name__}: {str(exc)[:160]}",
