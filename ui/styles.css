@@ -307,20 +307,56 @@ main {
 }
 .ask {
   width: 100%;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.workspace.chat-page {
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+.chat-page .app-header {
+  flex: none;
+}
+.chat-page main {
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  padding: 0 32px;
+}
+.chat-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  padding: 12px 8px 24px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
 }
 .ask-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(380px, 0.92fr);
-  align-items: start;
+  align-items: stretch;
+  height: 100%;
+  min-height: 0;
+  padding-top: 24px;
   gap: 36px;
 }
 .ask-main {
   min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 .database-panel {
   min-width: 0;
-  min-height: 620px;
-  margin-top: 12px;
+  min-height: 0;
+  margin-bottom: 16px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--paper);
@@ -385,14 +421,14 @@ main {
   font-weight: 600;
 }
 .database-content {
-  min-height: 220px;
+  min-height: 0;
   flex: 1;
   display: flex;
   flex-direction: column;
 }
 .database-scroll {
   overflow: auto;
-  max-height: 540px;
+  min-height: 0;
   flex: 1;
 }
 .database-table {
@@ -426,14 +462,75 @@ main {
   font-size: 13px;
 }
 .ask-heading {
-  margin-top: 12px;
+  margin: 0 0 12px;
+}
+.has-messages .chat-scroll {
+  justify-content: flex-start;
+}
+[data-chat-messages] {
+  display: flex;
+  flex-direction: column;
+  gap: 36px;
 }
 #analysis-form {
   position: relative;
+  flex: none;
+  padding: 12px 0 16px;
+}
+.chat-message {
+  min-width: 0;
+  font-size: 16px;
+  line-height: 1.75;
+  animation: chat-enter 160ms ease-out;
+}
+.chat-message[data-chat-role="user"] {
+  align-self: flex-end;
+  max-width: 80%;
+}
+.chat-message[data-chat-role="user"] p {
+  padding: 14px 20px;
+  border-radius: 24px;
+  background: var(--hover);
+}
+.chat-message p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.chat-status {
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+}
+.chat-status:empty {
+  display: none;
+}
+.chat-message[aria-busy="true"] p {
+  color: var(--muted);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+.chat-message[data-state="error"] .chat-status {
+  color: var(--coral);
+}
+.chat-message .case-links {
+  margin-top: 12px;
+}
+@keyframes chat-enter {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-message,
+  .chat-message[aria-busy="true"] p,
+  .send-progress {
+    animation: none !important;
+  }
 }
 .composer {
   border: 1px solid #d4d4d4;
-  border-radius: 8px;
+  border-radius: 24px;
   background: var(--paper);
   overflow: hidden;
   transition:
@@ -447,12 +544,12 @@ main {
 .composer textarea {
   display: block;
   width: 100%;
-  min-height: 132px;
-  max-height: 320px;
-  resize: vertical;
+  min-height: 56px;
+  max-height: 180px;
+  resize: none;
   border: 0;
   outline: none;
-  padding: 20px;
+  padding: 16px 20px 8px;
   background: transparent;
   font-size: 16px;
   line-height: 1.65;
@@ -465,9 +562,25 @@ main {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 12px 16px;
-  border-top: 1px solid var(--line);
-  background: var(--surface);
+  padding: 8px 12px 12px 20px;
+}
+.composer [data-run-button] {
+  width: 36px;
+  min-height: 36px;
+  padding: 0;
+  border-radius: 50%;
+  flex: none;
+}
+.send-progress {
+  width: 16px;
+  height: 16px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: send-spin 800ms linear infinite;
+}
+@keyframes send-spin {
+  to { transform: rotate(360deg); }
 }
 .source-picker {
   display: flex;
@@ -487,8 +600,10 @@ select {
   font-size: 13px;
 }
 .source-picker select {
-  max-width: 420px;
+  max-width: 320px;
   min-width: 0;
+  border: 0;
+  background: transparent;
 }
 .composer-help {
   display: flex;
@@ -496,8 +611,8 @@ select {
   justify-content: space-between;
   gap: 20px;
   color: var(--muted);
-  font-size: 12px;
-  margin: 12px 0;
+  margin: 10px 12px 0;
+  font-size: 11px;
 }
 .composer-help > :last-child {
   white-space: nowrap;
@@ -523,7 +638,7 @@ select {
 }
 .suggestions {
   position: absolute;
-  top: 100%;
+  bottom: 100%;
   left: 0;
   z-index: 10;
   width: min(690px, 100%);
@@ -1343,6 +1458,9 @@ pre {
   font-size: 13px;
 }
 @media (max-width: 1050px) {
+  .composer-help > :last-child {
+    display: none;
+  }
   .ask-layout {
     grid-template-columns: minmax(0, 1fr) minmax(330px, 0.92fr);
     gap: 24px;
@@ -1367,12 +1485,25 @@ pre {
   }
 }
 @media (max-width: 760px) {
+  .workspace.chat-page {
+    height: auto;
+    min-height: 100dvh;
+  }
+  .chat-page main {
+    flex: none;
+  }
   .ask-layout {
     grid-template-columns: 1fr;
+    height: auto;
+  }
+  .ask-main {
+    height: calc(100dvh - 148px);
+    min-height: 400px;
   }
   .database-panel {
-    margin-top: 8px;
+    margin-top: 0;
     min-height: 0;
+    max-height: 540px;
   }
   .topbar {
     padding: 16px 20px;
@@ -1454,21 +1585,40 @@ pre {
     align-items: flex-start;
   }
   .composer-footer {
-    align-items: stretch;
-    flex-direction: column;
-    gap: 12px;
+    gap: 8px;
+    padding-left: 12px;
+  }
+  .source-picker label {
+    display: none;
+  }
+  .source-picker {
+    flex: 1;
   }
   .source-picker select {
     max-width: 100%;
     width: 100%;
   }
   .composer-help {
-    flex-direction: column;
-    gap: 6px;
+    margin-inline: 8px;
+  }
+  .composer-help > :last-child {
+    display: none;
+  }
+  .chat-page main {
+    padding: 0 12px;
+  }
+  .chat-scroll {
+    padding: 24px 4px;
+  }
+  .chat-message {
+    font-size: 15px;
+  }
+  .chat-message[data-chat-role="user"] {
+    max-width: 90%;
   }
   .composer textarea {
-    min-height: 150px;
-    padding: 16px;
+    min-height: 56px;
+    padding: 16px 16px 8px;
   }
   .example-questions button {
     width: 100%;
