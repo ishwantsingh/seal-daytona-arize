@@ -46,6 +46,8 @@ class LogisticsEvolutionController:
         self.logistics, self.history, self.config, self.telemetry = logistics, history, config, telemetry
         self.repository, self.runner = repository, runner
         self.model_factory, self.evolution_model, self.on_progress = model_factory, evolution_model, on_progress
+        if hasattr(telemetry, "observe_model"):
+            self.evolution_model = telemetry.observe_model(evolution_model)
         self.evaluator = SelectionEvaluator(runner, history, config)
 
     def _progress(self, stage: str, **payload: Any) -> None:

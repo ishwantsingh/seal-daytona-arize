@@ -153,8 +153,10 @@ class TracedModel:
         project: str,
         metadata: dict[str, Any],
         mark_incomplete: Callable[[Exception], None],
+        name: str = "analyst.model",
     ) -> None:
         self._model = model
+        self._name = name
         self._trace_factory = trace_factory
         self._client = client
         self._project = project
@@ -164,12 +166,26 @@ class TracedModel:
     def complete(
         self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]
     ) -> ModelReply:
+        return self._invoke(
+            messages, tools, lambda: self._model.complete(messages, tools)
+        )
+
+    def complete_json(self, messages, schema=None):
+        structured = getattr(self._model, "complete_json", None)
+        invoke = (
+            (lambda: structured(messages, schema))
+            if callable(structured)
+            else (lambda: self._model.complete(messages, []))
+        )
+        return self._invoke(messages, [], invoke)
+
+    def _invoke(self, messages, tools, invoke):
         started_model = False
         completed_model = False
         reply: ModelReply | None = None
         try:
             context = self._trace_factory(
-                "analyst.model",
+                self._name,
                 run_type="chain",
                 client=self._client,
                 project_name=self._project,
@@ -179,7 +195,7 @@ class TracedModel:
             )
             with context as span:
                 started_model = True
-                reply = self._model.complete(messages, tools)
+                reply = invoke()
                 completed_model = True
                 _end_span(
                     span,
@@ -204,7 +220,7 @@ class TracedModel:
                 return reply
             if not started_model:
                 self._mark_incomplete(exc)
-                return self._model.complete(messages, tools)
+                return invoke()
             raise
 
 
@@ -317,7 +333,7 @@ class _PhoenixSpan:
         self.metadata = kwargs.get("metadata", {})
         self.kind = (
             "LLM"
-            if name == "analyst.model"
+            if name.endswith(".model")
             else "TOOL"
             if run_type == "tool"
             else "CHAIN"
@@ -420,6 +436,29 @@ class PhoenixTelemetry:
                     base_url=self._config.base_url, api_key=self._config.api_key
                 )
             return self._provider, self._client
+
+    def observe_model(self, model, role="evolution"):
+        if not self._config.enabled:
+            return model
+        try:
+            provider, client = self._dependencies()
+            tracer = provider.get_tracer("seal.supervisor")
+        except Exception:
+            return model
+        return TracedModel(
+            model,
+            trace_factory=lambda name, run_type="chain", **kwargs: _PhoenixSpan(
+                tracer, name, run_type, **kwargs
+            ),
+            client=client,
+            project=self._config.project,
+            metadata={
+                "role": role,
+                "model_id": getattr(model, "model", type(model).__name__),
+            },
+            mark_incomplete=lambda exc: None,
+            name=role + ".model",
+        )
 
     def _spans(self, trace_id):
         if not self._config.enabled:

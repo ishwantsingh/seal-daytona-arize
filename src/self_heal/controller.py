@@ -62,6 +62,8 @@ class EvolutionController:
         self.store, self.history, self.config, self.telemetry = store, history, config, telemetry
         self.repository, self.runner = repository, runner
         self.model_factory, self.evolution_model = model_factory, evolution_model
+        if hasattr(telemetry, "observe_model"):
+            self.evolution_model = telemetry.observe_model(evolution_model)
         self.evaluator = SelectionEvaluator(runner, history, config)
         self.on_progress = on_progress
 

@@ -312,3 +312,25 @@ def test_telemetry_initialization_failure_runs_agent_once(monkeypatch):
     assert execution.result.answer == {"value": 18}
     assert execution.trace.status == "incomplete"
     assert execution.trace.error_type == "ConnectionError"
+
+
+def test_supervisor_structured_calls_are_observed_as_llm_spans():
+    executor, _, _, _, exporter, _ = make_executor()
+    received = []
+    model = SimpleNamespace(
+        model="evolution-test",
+        complete_json=lambda messages, schema: (
+            received.append(schema) or ModelReply('{"diff":"patch"}', total_tokens=17)
+        ),
+    )
+    observed = executor.telemetry.observe_model(model)
+    assert (
+        observed.complete_json(
+            [{"role": "user", "content": "Propose a repair"}], {"type": "object"}
+        ).content
+        == '{"diff":"patch"}'
+    )
+    (span,) = exporter.get_finished_spans()
+    assert span.name == "evolution.model"
+    assert span.attributes["openinference.span.kind"] == "LLM"
+    assert received == [{"type": "object"}]

@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from openai import APIError
+
 from evals.analyst.generator import Scenario, ScenarioError, _parse_scenario
 from evals.analyst.oracle import OracleError, reference_answer
 from self_heal.model import ChatModel
@@ -27,11 +29,36 @@ class EvolutionProposal:
     diff: str
 
 
-def _request_json(model: ChatModel, system: str, payload: dict[str, Any]) -> dict[str, Any]:
-    reply = model.complete([
+PATCH_SCHEMA = {
+    "type": "object",
+    "properties": {
+        name: {"type": "string"} for name in ("hypothesis", "changed_mechanism", "diff")
+    },
+    "required": ["hypothesis", "changed_mechanism", "diff"],
+    "additionalProperties": False,
+}
+
+
+def _request_json(
+    model: ChatModel, system: str, payload: dict[str, Any], *, schema=None
+) -> dict[str, Any]:
+    messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": json.dumps(payload, sort_keys=True, default=str)},
-    ], [])
+    ]
+    structured = getattr(model, "complete_json", None)
+    try:
+        reply = (
+            structured(messages, schema)
+            if callable(structured)
+            else model.complete(messages, [])
+        )
+    except ValueError as exc:
+        raise ProposalError(str(exc)) from exc
+    except (APIError, OSError) as exc:
+        raise ProposalError(
+            f"Evolution provider request failed: {type(exc).__name__}"
+        ) from exc
     if reply.tool_calls or not reply.content:
         raise ProposalError("Evolution model did not return JSON")
     content = reply.content.strip()
@@ -49,64 +76,110 @@ def _request_json(model: ChatModel, system: str, payload: dict[str, Any]) -> dic
 
 
 def propose_scenario(
-    model: ChatModel, *, incident: dict[str, Any], contract: dict[str, Any],
-    config: AnalystConfig, scenario_id: str,
+    model: ChatModel,
+    *,
+    incident: dict[str, Any],
+    contract: dict[str, Any],
+    config: AnalystConfig,
+    scenario_id: str,
 ) -> tuple[Scenario | None, dict[str, Any]]:
     feedback = ""
     for _ in range(3):
         try:
-            raw = _request_json(model, (PROMPTS / "scenario.md").read_text() + feedback, {
-                "incident": incident, "contract": contract,
-            })
+            raw = _request_json(
+                model,
+                (PROMPTS / "scenario.md").read_text() + feedback,
+                {
+                    "incident": incident,
+                    "contract": contract,
+                },
+            )
             extension = raw.get("contract_extension")
             if extension is not None:
                 if not isinstance(extension, dict) or not all(
                     isinstance(extension.get(key), str) and extension[key].strip()
                     for key in ("behavior", "data_access", "oracle")
                 ):
-                    raise ProposalError("Contract extension must specify behavior, data access, and oracle")
+                    raise ProposalError(
+                        "Contract extension must specify behavior, data access, and oracle"
+                    )
                 return None, extension
-            allowed = {"description", "task", "question", "generation", "requested_capability"}
+            allowed = {
+                "description",
+                "task",
+                "question",
+                "generation",
+                "requested_capability",
+            }
             if set(raw) != allowed or not isinstance(raw["requested_capability"], str):
                 raise ProposalError("Scenario proposal is incomplete")
-            scenario = _parse_scenario({
-                "scenario_id": scenario_id,
-                "dataset_id": "incident-" + scenario_id,
-                "description": raw["description"],
-                "task": raw["task"],
-                "question": raw["question"],
-                "baseline_expectation": "pass",
-                "generation": raw["generation"],
-            }, PROMPTS, config)
+            scenario = _parse_scenario(
+                {
+                    "scenario_id": scenario_id,
+                    "dataset_id": "incident-" + scenario_id,
+                    "description": raw["description"],
+                    "task": raw["task"],
+                    "question": raw["question"],
+                    "baseline_expectation": "pass",
+                    "generation": raw["generation"],
+                },
+                PROMPTS,
+                config,
+            )
             reference_answer([], scenario.task, config)
             return scenario, {"requested_capability": raw["requested_capability"]}
         except (ProposalError, ScenarioError, OracleError, KeyError, TypeError) as exc:
-            feedback = "\nThe previous scenario was rejected by the protected validator: " + str(exc)[:200] + ". Return corrected raw JSON."
-    raise ProposalError("Evolution model could not specify a valid scenario within the protected contract")
+            feedback = (
+                "\nThe previous scenario was rejected by the protected validator: "
+                + str(exc)[:200]
+                + ". Return corrected raw JSON."
+            )
+    raise ProposalError(
+        "Evolution model could not specify a valid scenario within the protected contract"
+    )
 
 
 def propose_change(
-    model: ChatModel, *, incident: dict[str, Any], trace: list[dict[str, Any]],
-    contract: dict[str, Any], source: dict[str, str], reproduction: dict[str, Any],
+    model: ChatModel,
+    *,
+    incident: dict[str, Any],
+    trace: list[dict[str, Any]],
+    contract: dict[str, Any],
+    source: dict[str, str],
+    reproduction: dict[str, Any],
     previous_attempts: list[dict[str, Any]],
 ) -> EvolutionProposal:
     payload = {
-        "incident": incident, "trace": trace, "contract": contract,
-        "editable_source": source, "reproduction": reproduction,
+        "incident": incident,
+        "trace": trace,
+        "contract": contract,
+        "editable_source": source,
+        "reproduction": reproduction,
         "previous_attempts": previous_attempts,
     }
-    system = (PROMPTS / "diagnose.md").read_text() + "\n" + (PROMPTS / "evolve.md").read_text()
-    raw = _request_json(model, system, payload)
+    system = (
+        (PROMPTS / "diagnose.md").read_text()
+        + "\n"
+        + (PROMPTS / "evolve.md").read_text()
+    )
+    raw = _request_json(model, system, payload, schema=PATCH_SCHEMA)
     if set(raw) != {"hypothesis", "changed_mechanism", "diff"} or any(
         not isinstance(value, str) or not value.strip() for value in raw.values()
     ):
-        raise ProposalError("Evolution proposal must include a hypothesis, mechanism, and diff")
+        raise ProposalError(
+            "Evolution proposal must include a hypothesis, mechanism, and diff"
+        )
     return EvolutionProposal(**raw)
 
 
 def propose_logistics_change(
-    model: ChatModel, *, incident: dict[str, Any], trace: list[dict[str, Any]],
-    contract: dict[str, Any], source: dict[str, str], reproduction: dict[str, Any],
+    model: ChatModel,
+    *,
+    incident: dict[str, Any],
+    trace: list[dict[str, Any]],
+    contract: dict[str, Any],
+    source: dict[str, str],
+    reproduction: dict[str, Any],
     previous_attempts: list[dict[str, Any]],
 ) -> EvolutionProposal:
     """Request one bounded logistics repair without exposing protected bundles."""
@@ -130,13 +203,23 @@ than one tool call per page. A reusable tool must continue through its signed cu
 until `next_cursor` is null, respect the existing page, byte, and time budgets, and
 return the protected scalar output shape {"value": integer}. Preserve unrelated
 inventory behavior and never add a new external integration or MCP."""
-    raw = _request_json(model, system, {
-        "incident": incident, "trace": trace, "contract": contract,
-        "editable_source": source, "reproduction": reproduction,
-        "previous_attempts": previous_attempts,
-    })
+    raw = _request_json(
+        model,
+        system,
+        {
+            "incident": incident,
+            "trace": trace,
+            "contract": contract,
+            "editable_source": source,
+            "reproduction": reproduction,
+            "previous_attempts": previous_attempts,
+        },
+        schema=PATCH_SCHEMA,
+    )
     if set(raw) != {"hypothesis", "changed_mechanism", "diff"} or any(
         not isinstance(value, str) or not value.strip() for value in raw.values()
     ):
-        raise ProposalError("Evolution proposal must include a hypothesis, mechanism, and diff")
+        raise ProposalError(
+            "Evolution proposal must include a hypothesis, mechanism, and diff"
+        )
     return EvolutionProposal(**raw)

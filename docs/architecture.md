@@ -10,7 +10,7 @@ Tables retain immutable inventory/logistics datasets, runs, cases, candidate dif
 
 ## Observability and evaluation
 
-`telemetry.py` emits OpenInference-compatible OpenTelemetry root, LLM, and tool spans to Arize Phoenix. Every root includes the local run ID; SQLite stores the resulting 32-character trace ID and UI link. The supervisor verifies that the root is retrievable before claiming complete trace evidence.
+`telemetry.py` emits OpenInference-compatible OpenTelemetry root, LLM, tool, and supervisor proposal spans to Arize Phoenix. Every root includes the local run ID; SQLite stores the resulting 32-character trace ID and UI link. The supervisor verifies that the root is retrievable before claiming complete trace evidence.
 
 Secret fields, credential-bearing URIs, table rows, and aggregate answers are redacted before trace export. Remote traces are redacted again when read for diagnosis or UI display. Reported LLM token usage is captured at the host model boundary. Oracle correctness remains independent of trace narratives.
 
@@ -29,3 +29,5 @@ Git worktrees isolate source versions. The runner identity combines the immutabl
 ## Promotion
 
 The supervisor reproduces a supported failure, freezes independently gradable evidence, screens a narrow model-proposed diff, and compares baseline/candidate under the same model, data, configuration, and runner identity. Promotion requires all gates and an unchanged active parent. SQLite atomically activates the exact tested child. Rollback references retained versions. Final assessment cases are reserved before selection and consumed once.
+
+Supervisor scenario requests use JSON mode; patch requests use a strict JSON Schema and require a provider that supports it. Truncated or malformed outputs fail before patch screening. Generated source is never reconstructed from a partial response. Proposal model calls are traced separately as `evolution.model` so rejected outputs remain inspectable in Phoenix.

@@ -23,13 +23,17 @@ class ModelReply:
 
 
 class ChatModel(Protocol):
-    def complete(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> ModelReply: ...
+    def complete(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]
+    ) -> ModelReply: ...
 
 
 class OpenRouterModel:
     """OpenAI-compatible boundary that Phase 3 can wrap with Arize Phoenix."""
 
-    def __init__(self, api_key: str, model: str, *, timeout_seconds: float = 45) -> None:
+    def __init__(
+        self, api_key: str, model: str, *, timeout_seconds: float = 45
+    ) -> None:
         self.model = model
         self.timeout_seconds = timeout_seconds
         self.client = OpenAI(
@@ -50,8 +54,47 @@ class OpenRouterModel:
             "timeout_seconds": getattr(self, "timeout_seconds", None),
         }
 
-    def complete(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> ModelReply:
-        request: dict[str, Any] = {"model": self.model, "messages": messages, "temperature": 0}
+    def complete_json(
+        self, messages: list[dict[str, Any]], schema: dict[str, Any] | None = None
+    ) -> ModelReply:
+        """Supervisor-only structured output; ordinary agent settings stay fixed."""
+        response_format = (
+            {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "seal_evolution_proposal",
+                    "strict": True,
+                    "schema": schema,
+                },
+            }
+            if schema is not None
+            else {"type": "json_object"}
+        )
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            response_format=response_format,
+            extra_body={"provider": {"require_parameters": True}},
+        )
+        if not response.choices:
+            raise RuntimeError("Evolution model returned no choices")
+        choice = response.choices[0]
+        if getattr(choice, "finish_reason", None) == "length":
+            raise ValueError("Evolution model output was truncated")
+        usage = response.usage
+        return ModelReply(
+            content=choice.message.content,
+            total_tokens=usage.total_tokens if usage and usage.total_tokens else 0,
+        )
+
+    def complete(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]
+    ) -> ModelReply:
+        request: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": 0,
+        }
         if tools:
             request.update(tools=tools, tool_choice="auto", parallel_tool_calls=False)
         response = self.client.chat.completions.create(**request)
@@ -59,7 +102,9 @@ class OpenRouterModel:
             raise RuntimeError("Model returned no choices")
         message = response.choices[0].message
         calls = tuple(
-            ToolCall(id=call.id, name=call.function.name, arguments=call.function.arguments)
+            ToolCall(
+                id=call.id, name=call.function.name, arguments=call.function.arguments
+            )
             for call in (message.tool_calls or ())
         )
         usage = response.usage
