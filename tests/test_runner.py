@@ -116,7 +116,7 @@ def test_full_protocol_bridge_allows_candidate_owned_bulk_scan():
     scenario = load_scenarios(ROOT / "evals" / "analyst" / "scenarios.yaml", config)["bulk-warehouse-available"]
     case = prepare_case(scenario, config)
     store.materialize("bulk", list(case.rows))
-    temp = tempfile.TemporaryDirectory(dir="/private/tmp")
+    temp = tempfile.TemporaryDirectory()
     source = Path(temp.name) / "harness"
     Path(temp.name).chmod(0o755)
     shutil.copytree(ROOT / "harness", source)
@@ -184,7 +184,7 @@ def test_pinned_commit_run_records_supervisor_measured_evidence():
     history.ensure_indexes()
     fixture = json.loads((ROOT / "evals" / "analyst" / "data" / "small_inventory.json").read_text())
     dataset = store.materialize("small", fixture["rows"])
-    with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+    with tempfile.TemporaryDirectory() as directory:
         source = Path(directory)
         source.chmod(0o755)
         shutil.copytree(ROOT / "harness", source / "harness")
