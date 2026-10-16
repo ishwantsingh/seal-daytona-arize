@@ -9,10 +9,12 @@ operator interface, not an internet-facing authentication boundary.
 from __future__ import annotations
 
 import json
+import logging
 import mimetypes
 import os
 import re
 import sysconfig
+import uuid
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import date, datetime
@@ -24,10 +26,10 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from self_heal.database import ASCENDING
 
-from harness.agent import RunResult, logistics_capability_request
+from harness.agent import RunResult
 from harness.tools import AnalystTools
 from harness.logistics import LogisticsAgent, LogisticsTools, TOOL_VERSION
-from self_heal.execution import RunExecution, RunExecutor
+from self_heal.execution import RunExecution, RunExecutor, baseline_source_commit
 from self_heal.model import ChatModel
 from self_heal.settings import AnalystConfig, PhoenixConfig
 from self_heal.storage import HistoryStore
@@ -37,7 +39,7 @@ from self_heal.repository import CandidateRepository
 from self_heal.runner import CandidateRunner
 from self_heal.evidence import safe_payload
 from self_heal.logistics_store import DatasetBundleInfo, LogisticsDatasetStore
-from self_heal.contracts import canonical_hash, source_identity
+from self_heal.contracts import canonical_hash
 from self_heal.evolution_jobs import EvolutionJobService
 from self_heal.workflow import extract_workflow, proposal_overlay, workflow_diff
 from evals.logistics.generator import public_incident_bundle
@@ -61,6 +63,8 @@ class WebRequestError(ValueError):
 
 def _result_message(result: RunResult) -> str:
     if result.outcome == "unsupported":
+        if result.limitation_kind == "clarification_required":
+            return result.limitation_reason or "Please clarify the question."
         return "I can't answer that with my current capabilities."
     if result.outcome == "error":
         return f"Sorry, I couldn't complete that request: {result.error}."
@@ -70,6 +74,10 @@ def _result_message(result: RunResult) -> str:
         noun = "customer" if answer["value"] == 1 else "customers"
         return (f"{answer['value']} {noun} sent more than {task['threshold']} shipments "
                 f"from warehouse {task['warehouse_number']} yesterday.")
+    if "metric" not in task:
+        if "value" in answer:
+            return f"The result is {answer['value']}."
+        return "; ".join(f"{key}: {value}" for key, value in answer["groups"].items()) or "No matching groups."
     metric = {"available": "available", "on_hand": "on-hand", "reserved": "reserved"}[task["metric"]]
     location = {
         "warehouse": f" in the {task.get('filter_value')} warehouse",
@@ -526,6 +534,7 @@ class WebApplication:
                     payload["evolution_job_id"] = job["job_id"]
                     payload["evolution_url"] = "#evolve/" + job["job_id"]
                     payload["evolution_state"] = job.get("status")
+                    payload["evolution_reason"] = job.get("reason")
             return HTTPStatus.CREATED, payload
         if method == "POST" and route.path == "/api/datasets/logistics":
             if body != {} or self.logistics is None:
@@ -565,7 +574,7 @@ class WebApplication:
             return record.get("limitation_kind") == "capability_gap"
         if record.get("outcome") == "error":
             error = (record.get("error") or "").lower()
-            return bool(error) and not any(word in error for word in ("sqlite", "network", "provider", "trace"))
+            return bool(error) and not any(word in error for word in ("sqlite", "network", "provider", "trace", "model or runtime failure"))
         return False
 
     def _job_evaluations(self, job: dict[str, Any], *, limit: int) -> dict[str, Any]:
@@ -636,8 +645,6 @@ class WebApplication:
         if request.get("input_kind") == "logistics_bundle":
             if self.logistics is None or not dataset_id:
                 raise WebRequestError("Select a ready logistics bundle before running this question")
-            if logistics_capability_request(request["question"]) is None:
-                raise WebRequestError("This version only recognizes the customer shipment threshold question")
             dataset = self.logistics.dataset_info(dataset_id)
             contract = (self.config.task_contracts or {}).get("logistics-shipment-threshold-v1")
             if not contract:
@@ -657,12 +664,14 @@ class WebApplication:
                       invocation=request["question"], model=self.model_factory(),
                       workflow_revision_id=workflow_revision_id)
                 return execution, dataset
+            baseline_commit = baseline_source_commit()
+            baseline_source = CandidateRepository(PROJECT_ROOT).active_checkout(baseline_commit)
             workflow_revision_id = self._ensure_workflow(task_family=logistics_config.task_family,
-                                                          source=PROJECT_ROOT, source_commit=TOOL_VERSION)
+                                                          source=baseline_source, source_commit=baseline_commit)
             execution = RunExecutor(history=self.history, telemetry=self.telemetry, config=logistics_config).run(
                 model=self.model_factory(), tools=LogisticsTools(self.logistics.open_session(dataset_id), logistics_config),
                 dataset=dataset, invocation=request["question"], agent_factory=LogisticsAgent,
-                workflow_revision_id=workflow_revision_id)
+                workflow_revision_id=workflow_revision_id, source_commit=baseline_commit)
             return execution, dataset
         dataset = self.store.dataset_info(dataset_id) if dataset_id is not None else self._default_dataset()
         active = self.history.active_version(self.config.task_family)
@@ -678,15 +687,17 @@ class WebApplication:
                   workflow_revision_id=workflow_revision_id)
             return execution, dataset
         table = self.store.open_session(dataset.dataset_id)
-        baseline_commit = source_identity()["source"]["commit"]
+        baseline_commit = baseline_source_commit()
+        baseline_source = CandidateRepository(PROJECT_ROOT).active_checkout(baseline_commit)
         workflow_revision_id = self._ensure_workflow(task_family=self.config.task_family,
-                                                      source=PROJECT_ROOT, source_commit=baseline_commit)
+                                                      source=baseline_source, source_commit=baseline_commit)
         execution = RunExecutor(history=self.history, telemetry=self.telemetry, config=self.config).run(
             model=self.model_factory(),
             tools=AnalystTools(table, self.config),
             dataset=dataset,
             invocation=request["question"],
             workflow_revision_id=workflow_revision_id,
+            source_commit=baseline_commit,
         )
         return execution, dataset
 
@@ -783,7 +794,7 @@ class _WebRequestHandler(BaseHTTPRequestHandler):
         except (DatasetError, WebRequestError, ValueError, json.JSONDecodeError) as exc:
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
         except Exception:
-            self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "Run could not be completed"})
+            self._server_error("Run could not be completed")
 
     def _dispatch_api_or_asset(self) -> None:
         route = urlsplit(self.path)
@@ -794,9 +805,20 @@ class _WebRequestHandler(BaseHTTPRequestHandler):
             except (DatasetError, WebRequestError, ValueError) as exc:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
             except Exception:
-                self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "Service is unavailable"})
+                self._server_error("Service is unavailable")
             return
         self._send_asset(route.path)
+
+    def _server_error(self, message: str) -> None:
+        reference = uuid.uuid4().hex[:12]
+        logging.getLogger(__name__).exception(
+            "Local API %s %s failed (reference %s)",
+            self.command, urlsplit(self.path).path, reference,
+        )
+        self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {
+            "error": f"{message}. Server reference: {reference}.",
+            "error_id": reference,
+        })
 
     def _send_asset(self, request_path: str) -> None:
         relative = "index.html" if request_path in {"", "/"} else unquote(request_path).lstrip("/")

@@ -204,6 +204,10 @@ def _emit(payload: dict[str, Any]) -> None:
 
 
 def _answer_message(task: dict[str, Any], answer: dict[str, Any]) -> str:
+    if "metric" not in task:
+        if "value" in answer:
+            return f"The result is {answer['value']}."
+        return "; ".join(f"{name}: {value}" for name, value in answer["groups"].items()) or "No matching groups."
     metric = {"available": "available", "on_hand": "on-hand", "reserved": "reserved"}[
         task["metric"]
     ]
@@ -232,7 +236,8 @@ def _present_run(
     execution: RunExecution | None = None,
 ) -> int:
     if result.outcome == "unsupported":
-        message = "I can't answer that with my current capabilities."
+        message = (result.limitation_reason if result.limitation_kind == "clarification_required"
+                   else "I can't answer that with my current capabilities.")
     elif result.outcome == "error":
         message = f"Sorry, I couldn't complete that request: {result.error}."
     else:

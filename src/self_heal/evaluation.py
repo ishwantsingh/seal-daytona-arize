@@ -460,7 +460,8 @@ class SelectionEvaluator:
                 )
             )
         for stored in self.history.eval_cases.find(
-            {"origin": "observed_incident", "exposures.role": "regression"}
+            {"origin": "observed_incident", "exposures.role": "regression",
+             "dataset.input_kind": {"$ne": "logistics_bundle"}}
         ):
             if not stored.get("invocation") or not stored.get("task"):
                 continue
@@ -798,11 +799,19 @@ def _selection_violation(
         return "capability_refusal_for_answerable_case"
     if result.outcome == "error":
         return _error_violation(result.error)
-    if result.interpreted_task != case.task:
+    if _without_nulls(result.interpreted_task) != _without_nulls(case.task):
         return "task_mismatch"
     if result.answer != case.expected_answer:
         return "wrong_answer"
     return None
+
+
+def _without_nulls(task: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Treat an explicit null field the same as an omitted one when comparing tasks."""
+
+    if task is None:
+        return None
+    return {key: value for key, value in task.items() if value is not None}
 
 
 def _question_for(task: dict[str, Any]) -> str:

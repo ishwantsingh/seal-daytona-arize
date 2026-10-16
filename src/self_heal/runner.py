@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
-import os
 import hashlib
+import math
+import os
 import subprocess
 import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from harness.agent import RunResult, logistics_capability_request
-from harness.logistics import LogisticsTools
-from harness.tools import AnalystTools
 from evals.analyst.oracle import OracleError, _validate_task
+from harness.agent import RunResult
+from harness.logistics import TOOL_NAME, LogisticsTools, validate_logistics_task
+from harness.tools import AnalystTools
 from self_heal.contracts import (
     build_run_completion_patch,
     build_run_start_record,
@@ -21,14 +22,14 @@ from self_heal.contracts import (
     trace_metadata,
     utc_now,
 )
+from self_heal.evidence import EvidenceTools, run_evidence
 from self_heal.execution import RunExecution
+from self_heal.logistics_store import DatasetBundleInfo, LogisticsDatasetStore
 from self_heal.model import ChatModel
 from self_heal.settings import AnalystConfig
 from self_heal.storage import HistoryStore
-from self_heal.table_store import TableStore, DatasetInfo
-from self_heal.logistics_store import DatasetBundleInfo, LogisticsDatasetStore
+from self_heal.table_store import DatasetInfo, TableStore
 from self_heal.telemetry import PhoenixTelemetry
-from self_heal.evidence import EvidenceTools, run_evidence
 
 
 class RunnerError(RuntimeError):
@@ -285,6 +286,7 @@ class CandidateRunner:
         begun = time.monotonic()
         model_calls = tool_calls = tokens = observed_tools = 0
         payload = None
+        logistics_results = []
         error = None
         try:
             with self.transport_factory(self, harness_dir) as transport:
@@ -384,6 +386,8 @@ class CandidateRunner:
                                 and isinstance(arguments["relation"], str)
                             ):
                                 value = table.inspect_relation(**arguments)
+                            elif operation == "read_relation" and set(arguments) <= {"relation", "limit", "cursor"}:
+                                value = table.read_relation(**arguments)
                             elif operation == "read_shipments" and set(arguments) <= {
                                 "warehouse_number",
                                 "relative_day",
@@ -414,6 +418,8 @@ class CandidateRunner:
                                 or not isinstance(value, dict)
                             ):
                                 raise RunnerError("Invalid tool envelope")
+                            if input_kind == "logistics_bundle" and name == TOOL_NAME and "value" in value:
+                                logistics_results.append((arguments, value))
                             record = getattr(tools, "record_remote_tool", None)
                             if callable(record):
                                 record(name, arguments, value)
@@ -444,21 +450,36 @@ class CandidateRunner:
                 error = "Candidate returned an invalid answer envelope"
             else:
                 if input_kind == "logistics_bundle":
-                    expected = _logistics_task_for(invocation)
-                    if expected is None or interpreted != expected:
+                    expected = validate_logistics_task(invocation if isinstance(invocation, dict) else interpreted)
+                    if isinstance(invocation, dict) and (expected is None or interpreted != expected):
                         error = "Candidate returned a task outside the protected logistics contract"
-                    if error is None and not _valid_answer(answer, grouped=False):
+                    if error is None and not _valid_answer(answer, grouped="groups" in answer,
+                            allow_float=interpreted.get("operation") == "relational_aggregate"):
                         error = "Candidate returned an invalid answer shape"
+                    if error is None and expected is not None and not any(
+                        arguments == {key: expected[key] for key in ("warehouse_number", "relative_day", "threshold")}
+                        and answer == {"value": value["value"]}
+                        for arguments, value in logistics_results
+                    ):
+                        error = "Candidate answer lacks matching observed logistics tool evidence"
+                    if error is None and interpreted.get("operation") == "relational_aggregate":
+                        from evals.logistics.relational import (
+                            validate_task as validate_relational_task,
+                        )
+                        relational = validate_relational_task(interpreted)
+                        if relational is None or not table.completed_relation_scan(relational["relation"]):
+                            error = "Required relation rows were not fully read"
                     if error is None and observed_tools == 0:
                         error = "Candidate did not execute an observed logistics tool"
-                    if error is None and not table.completed_shipment_scan(
+                    if error is None and expected is not None and not table.completed_shipment_scan(
                         interpreted["warehouse_number"],
                         interpreted["relative_day"],
                     ):
                         error = "Required shipment rows were not fully read"
                 else:
                     try:
-                        _validate_task(interpreted, self.config)
+                        if isinstance(invocation, dict) or "metric" in interpreted:
+                            _validate_task(interpreted, self.config)
                     except OracleError:
                         error = (
                             "Candidate returned a task outside the protected contract"
@@ -470,7 +491,7 @@ class CandidateRunner:
                     ):
                         error = "Candidate changed the requested structured task"
                     if error is None and not _valid_answer(
-                        answer, grouped=interpreted.get("group_by") is not None
+                        answer, grouped="groups" in answer
                     ):
                         error = "Candidate returned an invalid answer shape"
                     if error is None and not table.completed_scan(
@@ -499,10 +520,14 @@ class CandidateRunner:
             limitation_reason=payload.get("limitation_reason")
             if outcome == "unsupported"
             else None,
+            capability_request=payload.get("capability_request") if isinstance(payload.get("capability_request"), dict) else None,
         )
 
 
-def _valid_answer(answer: dict[str, Any], *, grouped: bool) -> bool:
+def _valid_answer(answer: dict[str, Any], *, grouped: bool, allow_float: bool = False) -> bool:
+    def valid_number(value: Any) -> bool:
+        return type(value) is int or (allow_float and type(value) is float and math.isfinite(value))
+
     if grouped:
         groups = answer.get("groups")
         return (
@@ -510,39 +535,8 @@ def _valid_answer(answer: dict[str, Any], *, grouped: bool) -> bool:
             and isinstance(groups, dict)
             and list(groups) == sorted(groups)
             and all(
-                isinstance(key, str) and type(value) is int
+                isinstance(key, str) and valid_number(value)
                 for key, value in groups.items()
             )
         )
-    return set(answer) == {"value"} and type(answer.get("value")) is int
-
-
-def _logistics_task_for(invocation: dict[str, Any] | str) -> dict[str, Any] | None:
-    """Return the one canonical task a logistics candidate may execute."""
-
-    if isinstance(invocation, str):
-        request = logistics_capability_request(invocation)
-        if request is None:
-            return None
-        return {
-            key: request[key]
-            for key in (
-                "operation",
-                "warehouse_number",
-                "relative_day",
-                "threshold",
-            )
-        }
-    required = {"operation", "warehouse_number", "relative_day", "threshold"}
-    if set(invocation) != required:
-        return None
-    if (
-        invocation["operation"] != "count_customers_with_shipment_count_gt"
-        or type(invocation["warehouse_number"]) is not int
-        or invocation["warehouse_number"] < 1
-        or invocation["relative_day"] != "yesterday"
-        or type(invocation["threshold"]) is not int
-        or invocation["threshold"] < 0
-    ):
-        return None
-    return dict(invocation)
+    return set(answer) == {"value"} and valid_number(answer.get("value"))

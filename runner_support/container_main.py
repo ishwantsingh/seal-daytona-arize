@@ -73,6 +73,18 @@ class RemoteLogistics:
             "relation": relation,
         }})
 
+    def read_relation(self, **arguments):
+        try:
+            value = rpc({"type": "logistics", "operation": "read_relation", "arguments": arguments})
+        except RuntimeError as exc:
+            raise TableAccessError(str(exc)) from exc
+        rows = value.get("rows")
+        if not isinstance(rows, list):
+            raise TableAccessError("Supervisor returned an invalid relation page")
+        self.pages_read += 1
+        self.bytes_read += len(json.dumps(rows, separators=(",", ":")).encode())
+        return value
+
     def read_shipments(self, **arguments):
         try:
             value = rpc({"type": "logistics", "operation": "read_shipments", "arguments": arguments})
@@ -136,7 +148,7 @@ def main():
     try:
         result = agent.run(initial["invocation"], run_id=initial["run_id"])
         payload = {key: getattr(result, key, None) for key in (
-            "answer", "error", "outcome", "interpreted_task", "limitation_kind", "limitation_reason"
+            "answer", "error", "outcome", "interpreted_task", "limitation_kind", "limitation_reason", "capability_request"
         )}
         rpc({"type": "result", "value": payload})
     except BaseException as exc:

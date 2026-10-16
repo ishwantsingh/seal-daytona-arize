@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from pathlib import Path
+from typing import Any
 
 from harness.agent import AnalystAgent, RunResult
 from harness.tools import AnalystTools
@@ -14,12 +16,22 @@ from self_heal.contracts import (
     trace_metadata,
     utc_now,
 )
+from self_heal.evidence import EvidenceTools, run_evidence
 from self_heal.model import ChatModel
+from self_heal.repository import CandidateRepository
 from self_heal.settings import AnalystConfig
 from self_heal.storage import HistoryStore
 from self_heal.table_store import DatasetInfo
 from self_heal.telemetry import PhoenixTelemetry, TraceEvidence
-from self_heal.evidence import EvidenceTools, run_evidence
+
+# Capture the baseline at process startup, alongside the imported harness. Later
+# disk edits must not be attributed to code already loaded by this process.
+_BASELINE_ROOT = Path(__file__).resolve().parents[2]
+_BASELINE_HARNESS = {path.name: path.read_text() for path in sorted((_BASELINE_ROOT / "harness").glob("*.py"))}
+
+
+def baseline_source_commit() -> str:
+    return CandidateRepository(_BASELINE_ROOT).snapshot_harness(_BASELINE_HARNESS)
 
 
 @dataclass(frozen=True)
@@ -61,7 +73,9 @@ class RunExecutor:
         case_exposure: str | None = None,
         workflow_revision_id: str | None = None,
         agent_factory: Callable[[ChatModel, Any, AnalystConfig], Any] = AnalystAgent,
+        source_commit: str | None = None,
     ) -> RunExecution:
+        source_commit = source_commit or baseline_source_commit()
         run_id = new_run_id()
         started_at = utc_now()
         history_status = "not_configured" if self.history is None else "recording"
@@ -80,6 +94,7 @@ class RunExecutor:
                         case_id=case_id,
                         case_exposure=case_exposure,
                         workflow_revision_id=workflow_revision_id,
+                        source_commit=source_commit,
                     )
                 )
                 history_started = True

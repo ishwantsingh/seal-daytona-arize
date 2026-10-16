@@ -8,7 +8,7 @@ import pytest
 
 from evals.logistics.generator import public_incident_bundle
 from evals.logistics.oracle import reference_answer
-from harness.agent import AnalystAgent, RunResult, logistics_capability_request
+from harness.agent import AnalystAgent, RunResult
 from harness.logistics import LogisticsAgent, LogisticsTools, TOOL_NAME
 from harness.tools import AnalystTools
 from self_heal.input_router import InputRouter
@@ -16,7 +16,7 @@ from self_heal.logistics_store import LogisticsDatasetStore
 from self_heal.logistics_evaluation import run_logistics_checks
 from self_heal.logistics_evolution import FamilyEvolutionController, LogisticsEvolutionController
 from self_heal.execution import RunExecution
-from self_heal.model import ModelReply
+from self_heal.model import ModelReply, ToolCall
 from self_heal.repository import CandidateSource
 from self_heal.telemetry import TraceEvidence
 from self_heal.settings import PhoenixConfig, load_config
@@ -78,22 +78,66 @@ def test_logistics_session_is_filter_bound_and_cursor_bound():
 
 class NoCallsModel:
     def complete(self, *_args):
-        raise AssertionError("The baseline must refuse before any model or data access")
+        raise AssertionError("Structured tool checks must not call a model")
 
 
-def test_inventory_baseline_records_explicit_logistics_capability_gap_without_reads():
+class ScriptedModel:
+    def __init__(self, replies):
+        self.replies = iter(replies)
+        self.seen = []
+
+    def complete(self, messages, tools):
+        self.seen.append((messages, tools))
+        return next(self.replies)
+
+
+def logistics_model(warehouse=3, threshold=15, value=2):
+    return ScriptedModel([
+        ModelReply(None, (ToolCall("threshold", TOOL_NAME, json.dumps({
+            "warehouse_number": warehouse, "relative_day": "yesterday", "threshold": threshold,
+        })),), 20),
+        ModelReply(json.dumps({"value": value}), (), 10),
+    ])
+
+
+@pytest.mark.parametrize("question", [
+    "how many customers sent more than 15 shipments from warehouse 3 yesterday",
+    "Yesterday at warehouse three, count senders who shipped over fifteen times.",
+    "Count clients with 16 or more sent shipments yesterday from depot #3.",
+    "  How  many\tcustomers sent more than 15 shipments\nfrom warehouse 3 yesterday ?  ",
+])
+def test_logistics_questions_reach_the_model_with_registered_tools(question):
+    store, _, info, _ = materialized_store()
+    model = logistics_model()
+    result = LogisticsAgent(model, LogisticsTools(store.open_session(info.dataset_id), load_config()), load_config()).run(question)
+    assert result.outcome == "answered", result.error
+    assert result.answer == {"value": 2}
+    assert result.model_calls == 2 and result.tool_calls == 1
+    assert question.strip() in model.seen[0][0][1]["content"]
+    assert model.seen[0][1][0]["function"]["name"] == TOOL_NAME
+    assert model.seen[1][0][-1]["role"] == "tool"
+    assert result.interpreted_task["threshold"] == 15
+
+
+def test_inventory_baseline_asks_model_to_identify_missing_capabilities():
     config = load_config()
     inventory = TableStore(SQLiteDatabase(), config)
     inventory.ensure_indexes()
     inventory.materialize("inventory", [{"sku": "A", "warehouse": "East", "category": "Hardware", "on_hand": 1, "reserved": 0}])
     table = inventory.open_session("inventory")
-    result = AnalystAgent(NoCallsModel(), AnalystTools(table, config), config).run(
+    model = ScriptedModel([ModelReply(json.dumps({"unsupported": {
+        "reason": "Shipment data and aggregation are unavailable",
+        "capability_request": {"operation": "count_customers_with_shipment_count_gt", "threshold": 15},
+    }}), (), 20)])
+    result = AnalystAgent(model, AnalystTools(table, config), config).run(
         "How many customers sent more than 15 shipments from warehouse 3 yesterday?"
     )
     assert result.outcome == "unsupported"
     assert result.limitation_kind == "capability_gap"
-    assert result.capability_request and result.capability_request["kind"] == "shipment_customer_threshold"
-    assert result.model_calls == result.tool_calls == result.table_pages == result.table_bytes == 0
+    assert result.capability_request["threshold"] == 15
+    assert result.model_calls == 1
+    assert result.tool_calls == result.table_pages == result.table_bytes == 0
+    assert {tool["function"]["name"] for tool in model.seen[0][1]} == {"inspect_table", "read_rows", "calculate"}
 
 
 def test_reviewed_logistics_tool_matches_oracle_across_thresholds_and_pages():
@@ -102,8 +146,9 @@ def test_reviewed_logistics_tool_matches_oracle_across_thresholds_and_pages():
     for warehouse, threshold in ((3, 15), (3, 16), (3, 17), (2, 1)):
         session = store.open_session(info.dataset_id)
         tools = LogisticsTools(session, config)
-        question = f"How many customers sent more than {threshold} shipments from warehouse {warehouse} yesterday?"
-        result = LogisticsAgent(NoCallsModel(), tools, config).run(question)
+        task = {"operation": "count_customers_with_shipment_count_gt",
+                "warehouse_number": warehouse, "relative_day": "yesterday", "threshold": threshold}
+        result = LogisticsAgent(NoCallsModel(), tools, config).run(task)
         expected = reference_answer(bundle, {"operation": "count_customers_with_shipment_count_gt",
             "warehouse_number": warehouse, "relative_day": "yesterday", "threshold": threshold})
         assert result.outcome == "answered"
@@ -142,12 +187,18 @@ def test_router_requires_an_explicit_input_kind():
         router.describe(input_kind="unknown", dataset_id="inventory")
 
 
-def test_logistics_evolution_uses_the_bundle_controller_and_records_paired_trials():
+@pytest.mark.parametrize("aggregate", [False, True])
+def test_logistics_evolution_uses_the_bundle_controller_and_records_paired_trials(aggregate):
     store, database, dataset, _ = materialized_store()
     history = HistoryStore(database)
     history.ensure_indexes()
     config = load_config()
     question = "How many customers sent more than 15 shipments from warehouse 3 yesterday?"
+    from evals.logistics import relational
+    aggregate_task = {"operation": "relational_aggregate", "relation": "customers", "aggregate": "count",
+                      "field": None, "filters": [], "group_by": None}
+    if aggregate:
+        question = "How many total customers do we have"
     history.runs.insert_one({
         "_id": "logistics-gap", "run_id": "logistics-gap", "status": "completed",
         "outcome": "unsupported", "limitation_kind": "capability_gap",
@@ -173,8 +224,15 @@ def test_logistics_evolution_uses_the_bundle_controller_and_records_paired_trial
                     else inventory.dataset_info(info.dataset_id))
 
         def run(self, *, source_commit, dataset, invocation, **_kwargs):
-            request = logistics_capability_request(invocation) if isinstance(invocation, str) else None
-            if getattr(dataset, "input_kind", "inventory_table") == "logistics_bundle" and request and source_commit == "candidate":
+            # Test runner uses independently frozen task parameters, never production question parsing.
+            import re
+            match = re.search(r"more than (\d+) shipments from warehouse (\d+)", invocation) if isinstance(invocation, str) and "yesterday" in invocation else None
+            request = {"operation": "count_customers_with_shipment_count_gt", "threshold": int(match[1]),
+                       "warehouse_number": int(match[2]), "relative_day": "yesterday"} if match else None
+            if aggregate and getattr(dataset, "input_kind", "inventory_table") == "logistics_bundle" and "today" not in invocation and source_commit == "candidate":
+                result = RunResult(str(uuid.uuid4()), relational.reference_answer(store.verified_relations(dataset.dataset_id), aggregate_task),
+                                   None, "answered", aggregate_task, 0, 1, 0, 0.01, 2, 100)
+            elif getattr(dataset, "input_kind", "inventory_table") == "logistics_bundle" and request and source_commit == "candidate":
                 task = {key: request[key] for key in ("operation", "warehouse_number", "relative_day", "threshold")}
                 bundle = {**store.verified_relations(dataset.dataset_id),
                           "reference_instant": dataset.reference_instant.isoformat(),
@@ -195,7 +253,17 @@ def test_logistics_evolution_uses_the_bundle_controller_and_records_paired_trial
         def inspect(self, _source): pass
 
     class ProposalModel:
-        def complete(self, *_args):
+        def complete(self, messages, *_args):
+            if aggregate:
+                if "independent logistics oracle" in messages[0]["content"]:
+                    return ModelReply('{"needs_contract":true}')
+                if "Interpret the question as a declarative" in messages[0]["content"]:
+                    return ModelReply(json.dumps(aggregate_task))
+                if "Independently check" in messages[0]["content"]:
+                    return ModelReply('{"matches":true}')
+            if "independent logistics oracle" in messages[0]["content"]:
+                return ModelReply(json.dumps({"operation": "count_customers_with_shipment_count_gt",
+                    "warehouse_number": 3, "relative_day": "yesterday", "threshold": 15}))
             return ModelReply(json.dumps({"hypothesis": "A bounded tool is missing", "changed_mechanism": "tool registration",
                 "diff": "diff --git a/harness/logistics.py b/harness/logistics.py\n"}), (), 1)
 
@@ -215,6 +283,14 @@ def test_logistics_evolution_uses_the_bundle_controller_and_records_paired_trial
     assert history.candidates.count_documents({"incident_run_id": "logistics-gap"}) == 1
     assert history.selection_plans.count_documents({}) == 1
     assert history.evaluations.count_documents({"plan_id": {"$exists": True}}) > 0
+    if aggregate:
+        # Inspect the selection result rather than assuming proposal creation is success.
+        candidate = history.candidates.find_one({"incident_run_id": "logistics-gap"})
+        protected = [trial for trial in candidate["selection"]["trials"]
+                     if trial["version"] == "candidate" and trial["role"] in
+                     {"original", "generated_reproduction", "private_validation", "negative_refusal"}]
+        assert protected and all(trial["passed"] for trial in protected)
+
 
 
 def test_logistics_proposer_receives_the_observed_tool_boundary_and_page_schema():
@@ -239,3 +315,78 @@ def test_logistics_proposer_receives_the_observed_tool_boundary_and_page_schema(
     assert "only `definitions()`, `execute(name, arguments)`, and `table`" in interface
     assert "custom tool helper methods\nare not forwarded" in interface
     assert "rather\nthan one tool call per page" in interface
+
+
+def test_new_logistics_tool_is_available_without_changing_question_routing():
+    class ExtendedTools(LogisticsTools):
+        def definitions(self):
+            return super().definitions() + [{"type": "function", "function": {
+                "name": "shipment_row_count", "description": "Count all shipment records in the assigned bundle.",
+                "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+            }}]
+
+        def execute(self, name, arguments):
+            if name == "shipment_row_count" and arguments == {}:
+                return {"value": self.table.inspect_relation("shipments")["row_count"]}
+            return super().execute(name, arguments)
+
+    store, _, dataset, _ = materialized_store()
+    config = load_config()
+    model = ScriptedModel([
+        ModelReply(None, (ToolCall("count", "shipment_row_count", "{}"),), 10),
+        ModelReply('{"task":{"operation":"shipment_row_count"},"answer":{"value":74}}', (), 10),
+    ])
+    result = LogisticsAgent(model, ExtendedTools(store.open_session(dataset.dataset_id), config), config).run(
+        "How many shipment records are stored?"
+    )
+    assert result.outcome == "answered", result.error
+    assert result.answer == {"value": 74}
+    assert result.interpreted_task == {"operation": "shipment_row_count"}
+    assert {tool["function"]["name"] for tool in model.seen[0][1]} == {TOOL_NAME, "shipment_row_count"}
+
+
+def test_logistics_evolution_preserves_new_operations_as_needing_an_oracle():
+    store, database, dataset, _ = materialized_store()
+    history = HistoryStore(database)
+    history.ensure_indexes()
+    question = "Show monthly shipping totals by customer segment."
+    history.runs.insert_one({
+        "_id": "new-operation", "run_id": "new-operation", "status": "completed",
+        "outcome": "unsupported", "limitation_kind": "capability_gap",
+        "invocation": {"question": question, "task_family": "logistics-shipment-threshold"},
+        "capability_request": {"operation": "monthly_shipments_by_segment"},
+        "dataset": {"id": dataset.dataset_id, "content_hash": dataset.content_hash, "input_kind": "logistics_bundle"},
+    })
+    model = ScriptedModel([ModelReply('{"needs_contract":true}'), ModelReply('{"needs_contract":true}')])
+    controller = LogisticsEvolutionController(
+        logistics=store, history=history, config=load_config(),
+        telemetry=PhoenixTelemetry(PhoenixConfig(enabled=False, project="test")),
+        repository=None, runner=None, model_factory=NoCallsModel, evolution_model=model,
+    )
+    result = controller.evolve("new-operation")
+    assert result["status"] == "needs_contract"
+    assert result["proposal"]["operation"] == "monthly_shipments_by_segment"
+    assert history.get_gap("new-operation")["status"] == "needs_contract"
+    assert question in model.seen[0][0][1]["content"]
+
+
+def test_model_can_combine_registered_tool_results_for_a_different_request():
+    store, _, dataset, _ = materialized_store()
+    config = load_config()
+    model = ScriptedModel([
+        ModelReply(None, (ToolCall("warehouse-three", TOOL_NAME, json.dumps({
+            "warehouse_number": 3, "relative_day": "yesterday", "threshold": 15,
+        })),), 10),
+        ModelReply(None, (ToolCall("warehouse-two", TOOL_NAME, json.dumps({
+            "warehouse_number": 2, "relative_day": "yesterday", "threshold": 1,
+        })),), 10),
+        ModelReply('{"task":{"operation":"difference_of_customer_counts"},"answer":{"value":1}}', (), 10),
+    ])
+    result = LogisticsAgent(model, LogisticsTools(store.open_session(dataset.dataset_id), config), config).run(
+        "Yesterday, how many more customers sent over 15 shipments from warehouse 3 than sent over 1 from warehouse 2?"
+    )
+    assert result.outcome == "answered", result.error
+    assert result.answer == {"value": 1}
+    assert result.interpreted_task == {"operation": "difference_of_customer_counts"}
+    assert result.model_calls == 3 and result.tool_calls == 2
+    assert json.loads(model.seen[2][0][-1]["content"])["value"] == 1

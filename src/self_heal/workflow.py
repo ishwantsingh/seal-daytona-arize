@@ -7,6 +7,7 @@ code while extracting metadata.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import re
 from dataclasses import dataclass
@@ -18,7 +19,7 @@ from self_heal.settings import AnalystConfig
 
 
 GRAPH_SCHEMA_VERSION = 1
-EXTRACTOR_VERSION = "trusted-static-v1"
+EXTRACTOR_VERSION = "trusted-static-v3"
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -130,14 +131,26 @@ def _logistics_graph(source: Path, config: AnalystConfig) -> dict[str, Any]:
     refs = _source_refs(source, ("harness/logistics.py", "harness/agent.py"))
     tools = _tool_names(source, logistics=True)
     has_logistics_agent = (source / "harness" / "logistics.py").is_file()
+    model_loop = False
+    if has_logistics_agent:
+        tree = ast.parse((source / "harness" / "logistics.py").read_text(encoding="utf-8"))
+        model_loop = any(
+            isinstance(node, ast.Call) and (
+                isinstance(node.func, ast.Name) and node.func.id == "run_question"
+                or isinstance(node.func, ast.Attribute) and node.func.attr == "complete"
+            )
+            for cls in tree.body if isinstance(cls, ast.ClassDef) and cls.name == "LogisticsAgent"
+            for node in ast.walk(cls)
+        )
     agent_label = "Logistics agent" if has_logistics_agent else "No logistics agent registered"
-    agent_summary = ("Direct reviewed tool dispatch; it makes zero model calls."
+    agent_summary = ("Bounded model and tool loop over natural-language questions." if model_loop else
+                     "Direct reviewed tool dispatch; it makes zero model calls."
                      if has_logistics_agent else
                      "This pinned harness has no logistics agent or registered logistics tool.")
     group_summary = ("Registered logistics tools." if has_logistics_agent else
                      "No tools are registered for the logistics task family.")
     nodes = [
-        _node("context:task", "context_source", "Recognized logistics request", summary="The reviewed threshold request and bounded arguments.", source=refs.get("harness/agent.py", []), layout=(70, 170)),
+        _node("context:task", "context_source", "Task input", summary="Natural-language question or structured task." if model_loop else "The reviewed threshold request and bounded arguments.", source=refs.get("harness/agent.py", []), layout=(70, 170)),
         _node("agent:logistics", "agent", agent_label, summary=agent_summary, source=refs.get("harness/logistics.py", []), layout=(305, 205)),
         _node("group:logistics-tools", "tool_group", "Tools", group="agent:logistics", summary=group_summary, layout=(505, 100)),
         _node("supervisor:telemetry", "supervisor", "Tracing adapter", summary="Trusted telemetry; not a callable tool.", layout=(525, 400)),
@@ -153,6 +166,10 @@ def _logistics_graph(source: Path, config: AnalystConfig) -> dict[str, Any]:
                            layout=(535, 168 + index * 90)))
     edges = [_edge("context:task", "agent:logistics", "supplies_context"),
              _edge("agent:logistics", "supervisor:telemetry", "observed_by")]
+    if model_loop:
+        nodes.append(_node("external:model", "external_system", "Model provider",
+                           summary="Configured model API used through the trusted client.", layout=(305, 400)))
+        edges.append(_edge("agent:logistics", "external:model", "calls_external"))
     if has_logistics_agent:
         edges.append(_edge("adapter:logistics", "data:logistics", "reads_from"))
     for name in tools:
@@ -161,13 +178,13 @@ def _logistics_graph(source: Path, config: AnalystConfig) -> dict[str, Any]:
     return {"nodes": nodes, "edges": edges, "metadata": {
         "runtime_mcp_servers": [],
         "boundaries": ["editable harness", "trusted host"],
-        "execution_mode": "direct_tool_dispatch",
+        "execution_mode": "model_tool_loop" if model_loop else "direct_tool_dispatch",
         "missing_components": [] if has_logistics_agent else ["logistics agent", "logistics tools", "logistics data adapter"],
     }}
 
 
 def extract_workflow(*, source: Path, source_commit: str, config: AnalystConfig, task_family: str | None = None) -> WorkflowSnapshot:
-    """Derive one immutable workflow snapshot from a clean, pinned source tree."""
+    """Identify an immutable snapshot by configuration and actual source graph."""
 
     family = task_family or config.task_family
     source = source.resolve()
@@ -178,6 +195,7 @@ def extract_workflow(*, source: Path, source_commit: str, config: AnalystConfig,
     identity = {
         "task_family": family,
         "source_commit": source_commit,
+        "graph_hash": graph_hash,
         "config_hash": config.config_hash,
         "contract_hash": config.contract_hash,
         "graph_schema_version": GRAPH_SCHEMA_VERSION,

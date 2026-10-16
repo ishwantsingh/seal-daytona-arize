@@ -14,7 +14,8 @@ The compact composer stays at the bottom while the conversation scrolls above
 it. Enter sends, Shift+Enter adds a line, and Cmd/Ctrl+Enter also sends. Example
 questions appear before the first message; run history lives on the Runs page.
 The read-only database viewer stays beside the chat on the right, with table
-switching for logistics sources. On narrow screens it stacks below the chat.
+switching for logistics sources. The Ask workspace fills the available horizontal
+width with 32px side gutters. On narrow screens the viewer stacks below the chat.
 Each message uses the source selected when it was sent; questions are independent
 database requests, not contextual follow-ups. While a request runs, the chat
 shows a pending reply and prevents duplicate submissions. Errors appear inline
@@ -22,7 +23,10 @@ and restore the submitted question unless you have already typed a new draft.
 View run and View evolution links open the recorded evidence when needed.
 The conversation, reply links, draft, selected source, and scroll position are
 saved in this browser's local storage and restored across navigation and page
-reloads. New analysis clears the conversation and draft. A request interrupted
+reloads. Reset chat clears the conversation, draft, and scroll position, including
+saved browser state. It stays available during a request; late responses cannot
+repopulate a reset chat. The selected data source is preserved, and submitted runs
+remain in Runs. A request interrupted
 by a reload is marked as interrupted; check Runs before sending it again.
 Completed analyses also remain in Runs.
 
