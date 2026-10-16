@@ -68,3 +68,71 @@ def test_scripted_models_still_use_the_same_validated_json_boundary():
         _request_json(model, "Return JSON", {}, schema=PATCH_SCHEMA)["hypothesis"]
         == "h"
     )
+
+
+def test_full_file_proposal_computes_patch_against_exact_pinned_source(tmp_path):
+    import subprocess
+    from self_heal.evolution import _proposal_from_json
+    from self_heal.repository import CandidateRepository
+
+    (tmp_path / "harness").mkdir()
+    (tmp_path / "harness/tools.py").write_text("VALUE = 1\n")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@local.invalid",
+            "commit",
+            "-qm",
+            "base",
+        ],
+        cwd=tmp_path,
+        check=True,
+    )
+    parent = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True
+    ).strip()
+    proposal = _proposal_from_json(
+        {
+            "hypothesis": "Reusable change",
+            "changed_mechanism": "scan",
+            "files": [
+                {"path": "harness/tools.py", "content": "VALUE = 2\n"},
+                {
+                    "path": "harness/aggregate.py",
+                    "content": "def total(values):\n    return sum(values)\n",
+                },
+            ],
+        },
+        {"tools.py": "VALUE = 1\n"},
+    )
+    candidate = CandidateRepository(tmp_path).apply_proposal(parent, proposal.diff)
+    assert (candidate.worktree / "harness/tools.py").read_text() == "VALUE = 2\n"
+    assert (candidate.worktree / "harness/aggregate.py").is_file()
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        [{"path": "../tools.py", "content": "VALUE = 2"}],
+        [{"path": "src/self_heal/evaluation.py", "content": "VALUE = 2"}],
+        [{"path": "harness/tools.py", "content": "def broken("}],
+        [
+            {"path": "harness/tools.py", "content": "VALUE = 2"},
+            {"path": "harness/tools.py", "content": "VALUE = 3"},
+        ],
+        [{"path": "harness/tools.py", "content": "VALUE = 1\n"}],
+    ],
+)
+def test_invalid_full_file_proposals_fail_before_git_execution(files):
+    from self_heal.evolution import _proposal_from_json
+
+    with pytest.raises(ProposalError):
+        _proposal_from_json(
+            {"hypothesis": "h", "changed_mechanism": "m", "files": files},
+            {"tools.py": "VALUE = 1\n"},
+        )

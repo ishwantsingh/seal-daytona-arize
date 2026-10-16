@@ -1,6 +1,8 @@
-Return exactly one JSON object with keys hypothesis, changed_mechanism, diff.
-The diff must be a unified Git patch changing only Python source under harness/.
-Use exact source context and valid hunk boundaries so `git apply --check` succeeds.
+Return exactly one JSON object with keys hypothesis, changed_mechanism, files.
+Each files entry must contain path (harness/name.py) and content (the complete
+new Python source for that file). Return only changed files. Do not write patch
+hunks; the supervisor computes an exact Git diff against the pinned source.
+Use only the Python standard library. Preserve source that does not need changing.
 Implement one reusable mechanism that solves the reproduced failure within the
 existing limits. It may add a tool that scans bounded table pages within one model
 tool call and computes aggregates itself. Do not modify supervisor code, oracle,
