@@ -88,3 +88,5 @@ uv run seal final assess --manifest /tmp/seal-final.json
 ```
 
 See [setup](SETUP.md), [architecture](docs/architecture.md), and [evaluation rules](docs/evaluation.md).
+
+The [live verification report](docs/live-verification.md) records a completed Daytona/Phoenix repair cycle and links the exact generated patch.

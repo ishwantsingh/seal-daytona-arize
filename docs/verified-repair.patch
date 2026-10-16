@@ -1,0 +1,134 @@
+diff --git a/harness/context.py b/harness/context.py
+index 746eda6..39e25a4 100644
+--- a/harness/context.py
++++ b/harness/context.py
+@@ -16,12 +16,18 @@ def build_messages(
+ ) -> list[dict[str, Any]]:
+     system = (
+         "You are an inventory table analyst. Use only the assigned table and the provided tools; "
+-        "never invent rows. Inspect the table, read all rows needed for the answer, and use calculate "
+-        "when arithmetic helps. An equality filter matches the named field exactly. The available "
+-        "metric is on_hand minus reserved for each row. For an ungrouped task, reply with only JSON "
+-        '{"value": integer}. For a grouped task, reply with only JSON {"groups": {"name": integer, ...}} '
+-        "with group keys in alphabetical order. Empty matches total zero; empty grouped results are {}. "
+-        "If you cannot inspect all needed rows within the tool budget, do not guess."
++        "never invent rows. The preferred way to answer is a single call to aggregate_metric, passing "
++        "exactly the validated task's metric, group_by, filter_field, and filter_value: include "
++        "filter_field and filter_value together only when the validated task itself contains them, and "
++        "omit both entirely when the validated task has no filter. An empty string is a real equality "
++        "value (it matches only rows whose field is literally empty), never a stand-in for 'all rows'; "
++        "do not invent a filter the validated task does not contain, and do not drop a filter it does "
++        "contain. You may also inspect the table or read_rows page by page, continuing with next_cursor "
++        "until it is null, and use calculate for extra arithmetic. The available metric is on_hand minus "
++        "reserved for each row. For an ungrouped task, reply with only JSON {\"value\": integer}. For a "
++        "grouped task, reply with only JSON {\"groups\": {\"name\": integer, ...}} with group keys in "
++        "alphabetical order. Empty matches total zero; empty grouped results are {}. If you cannot inspect "
++        "all needed rows within the tool budget, do not guess."
+     )
+     user_content = "Answer this structured task: " + json.dumps(task, sort_keys=True)
+     if question is not None:
+diff --git a/harness/tools.py b/harness/tools.py
+index 7b1ae4e..c0ecdd4 100644
+--- a/harness/tools.py
++++ b/harness/tools.py
+@@ -1,4 +1,4 @@
+-"""The three model-facing tools in the initial editable harness."""
++"""The model-facing tools in the editable harness."""
+ 
+ from __future__ import annotations
+ 
+@@ -45,6 +45,35 @@ class AnalystTools:
+                     },
+                 },
+             },
++            {
++                "type": "function",
++                "function": {
++                    "name": "aggregate_metric",
++                    "description": (
++                        "Scan every remaining page of the assigned table in one call (continuing until "
++                        "next_cursor is null, within the page and byte budgets) and compute the exact total "
++                        "requested by the validated task: a scalar total, or a per-group total when group_by "
++                        "is given. Pass filter_field and filter_value together only when the validated task "
++                        "itself includes a filter; omit both entirely when the task has no filter. An empty "
++                        "string supplied as filter_value is a real equality test (matches only rows whose "
++                        "field is literally empty) and is never a stand-in for 'match all rows'. Never invent "
++                        "a filter that the validated task does not contain, and never drop a filter the task "
++                        "does contain. Returns {\"value\": integer} when group_by is omitted, or "
++                        '{"groups": {name: integer, ...}} sorted alphabetically by group key when group_by is given.'
++                    ),
++                    "parameters": {
++                        "type": "object",
++                        "properties": {
++                            "metric": {"type": "string", "enum": list(self.config.metrics)},
++                            "group_by": {"type": "string", "enum": list(self.config.group_fields)},
++                            "filter_field": {"type": "string", "enum": list(self.config.filter_fields)},
++                            "filter_value": {"type": "string"},
++                        },
++                        "required": ["metric"],
++                        "additionalProperties": False,
++                    },
++                },
++            },
+             {
+                 "type": "function",
+                 "function": {
+@@ -77,6 +106,8 @@ class AnalystTools:
+             if set(arguments) - {"cursor", "limit", "filter_field", "filter_value"}:
+                 raise ToolError("Unsupported read_rows argument")
+             return self.table.read_rows(**arguments)
++        if name == "aggregate_metric":
++            return self._aggregate_metric(arguments)
+         if name == "calculate":
+             if set(arguments) != {"operation", "values"}:
+                 raise ToolError("calculate requires operation and values")
+@@ -91,3 +122,49 @@ class AnalystTools:
+                 return {"value": values[0] - values[1]}
+             raise ToolError("Unsupported calculator operation or operand count")
+         raise ToolError("Tool is not registered")
++
++    def _aggregate_metric(self, arguments: dict[str, Any]) -> dict[str, Any]:
++        allowed = {"metric", "group_by", "filter_field", "filter_value"}
++        if not isinstance(arguments, dict) or set(arguments) - allowed:
++            raise ToolError("Unsupported aggregate_metric argument")
++        metric = arguments.get("metric")
++        if metric not in self.config.metrics:
++            raise ToolError("aggregate_metric requires a supported metric")
++        group_by = arguments.get("group_by")
++        if group_by is not None and group_by not in self.config.group_fields:
++            raise ToolError("aggregate_metric group_by is unsupported")
++        filter_field = arguments.get("filter_field")
++        filter_value = arguments.get("filter_value")
++        if (filter_field is None) != (filter_value is None):
++            raise ToolError("filter_field and filter_value must be provided together, or both omitted")
++        if filter_field is not None and (filter_field not in self.config.filter_fields or not isinstance(filter_value, str)):
++            raise ToolError("aggregate_metric filter is unsupported")
++
++        base_kwargs: dict[str, Any] = {"limit": self.config.limits.max_page_size}
++        if filter_field is not None:
++            base_kwargs["filter_field"] = filter_field
++            base_kwargs["filter_value"] = filter_value
++
++        scalar_total = 0
++        grouped_totals: dict[str, int] = {}
++        cursor: str | None = None
++        for _ in range(self.config.limits.max_pages):
++            kwargs = dict(base_kwargs)
++            if cursor is not None:
++                kwargs["cursor"] = cursor
++            page = self.table.read_rows(**kwargs)
++            if self.table.bytes_read > self.config.limits.max_bytes:
++                raise ToolError("aggregate_metric exceeded the byte budget")
++            for row in page["rows"]:
++                value = row["on_hand"] - row["reserved"] if metric == "available" else row[metric]
++                if group_by is not None:
++                    key = row[group_by]
++                    grouped_totals[key] = grouped_totals.get(key, 0) + value
++                else:
++                    scalar_total += value
++            cursor = page["next_cursor"]
++            if cursor is None:
++                if group_by is not None:
++                    return {"groups": {key: grouped_totals[key] for key in sorted(grouped_totals)}}
++                return {"value": scalar_total}
++        raise ToolError("aggregate_metric exceeded the page budget")
